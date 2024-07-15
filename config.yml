@@ -1,0 +1,15 @@
+host: 127.0.0.1:25565 # host to bind meexprox
+
+talk_host: 127.0.0.1:12346 # secret host to talk with meexprox (optional)
+talk_secret: qwerty123456  # secret token for talk with meexprox (optional)
+
+servers: # verified servers (name -> ip)
+  play: 127.0.0.1:12345
+
+forced_hosts: # connect to server from connected hostname (name -> hostname) (optional)
+  play: play.localhost
+  
+default_server: play # default server to connect (optional)
+
+player_forwarding: disabled # how to transfer player ip to connected server (handshake / plugin response / disabled)
+no_pf_for_ip_connect: true # disable player forwarding for connecting with server ip
