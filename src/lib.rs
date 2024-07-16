@@ -67,6 +67,7 @@ pub struct ProxyConfig {
     pub talk_host: Option<String>,
     pub talk_secret: Option<String>,
     pub player_forwarding: PlayerForwarding,
+    pub no_pf_for_ip_connect: bool,
 }
 
 impl ProxyConfig {
@@ -77,6 +78,7 @@ impl ProxyConfig {
         talk_host: Option<String>,
         talk_secret: Option<String>,
         player_forwarding: PlayerForwarding,
+        no_pf_for_ip_connect: bool,
     ) -> ProxyConfig {
         ProxyConfig {
             host,
@@ -85,6 +87,7 @@ impl ProxyConfig {
             talk_host,
             talk_secret,
             player_forwarding,
+            no_pf_for_ip_connect,
         }
     }
 
@@ -103,6 +106,12 @@ impl ProxyConfig {
             },
             _ => PlayerForwarding::Handshake,
         };
+        let no_pf_for_ip_connect = data
+            .get(Value::String("no_pf_for_ip_connect".to_string()))
+            .or(Some(&Value::Bool(true)))
+            .ok_or(ProxyError::ConfigParse)?
+            .as_bool()
+            .ok_or(ProxyError::ConfigParse)?;
 
         let mut servers = Vec::new();
         if let Some(servers_map) = data
@@ -139,6 +148,7 @@ impl ProxyConfig {
             talk_host,
             talk_secret,
             player_forwarding,
+            no_pf_for_ip_connect,
         ))
     }
 
@@ -181,11 +191,15 @@ impl ProxyConfig {
     pub fn get_talk_secret(&self) -> Option<&String> {
         self.talk_secret.as_ref()
     }
+
+    pub fn get_no_pf_for_ip_connect(&self) -> bool {
+        self.no_pf_for_ip_connect
+    }
 }
 
 pub struct ProxyPlayer {
-    pub connection: TcpStream,
-    pub connection_server: TcpStream,
+    pub client_conn: MinecraftConnection<TcpStream>,
+    pub server_conn: MinecraftConnection<TcpStream>,
     pub name: Option<String>,
     pub uuid: Option<Uuid>,
     pub server: Option<ProxyServer>,
@@ -193,15 +207,15 @@ pub struct ProxyPlayer {
 
 impl ProxyPlayer {
     pub fn new(
-        connection: TcpStream,
-        connection_server: TcpStream,
+        client_conn: MinecraftConnection<TcpStream>,
+        server_conn: MinecraftConnection<TcpStream>,
         name: Option<String>,
         uuid: Option<Uuid>,
         server: Option<ProxyServer>,
     ) -> ProxyPlayer {
         ProxyPlayer {
-            connection,
-            connection_server,
+            client_conn,
+            server_conn,
             name,
             uuid,
             server,
@@ -211,7 +225,7 @@ impl ProxyPlayer {
 
 pub struct MeexProx {
     pub config: ProxyConfig,
-    pub players: Vec<ProxyPlayer>,
+    pub players: Vec<Arc<Mutex<ProxyPlayer>>>,
     pub listener: Option<TcpListener>,
 }
 
@@ -224,11 +238,11 @@ impl MeexProx {
         }
     }
 
-    pub fn get_player(&self, uuid: Uuid) -> Option<&ProxyPlayer> {
+    pub fn get_player(&self, uuid: Uuid) -> Option<Arc<Mutex<ProxyPlayer>>> {
         for player in &self.players {
-            if let Some(player_uuid) = player.uuid {
+            if let Some(player_uuid) = player.lock().unwrap().uuid {
                 if player_uuid == uuid {
-                    return Some(player);
+                    return Some(player.clone());
                 }
             }
         }
@@ -244,19 +258,7 @@ impl MeexProx {
 
         let mut client_conn = MinecraftConnection::new(stream);
 
-        // TODO: remove this anti-ipv6 mrakobesie!!
-        let SocketAddr::V4(addrv4) = addr else {
-            return Ok(());
-        };
-        debug!(
-            "accepted stream {}.{}.{}.{}:{}",
-            addrv4.ip().octets()[0],
-            addrv4.ip().octets()[1],
-            addrv4.ip().octets()[2],
-            addrv4.ip().octets()[3],
-            addrv4.port()
-        );
-        // TODO: remove this anti-ipv6 mrakobesie!!
+        info!("connected stream {}", addr.to_string());
 
         let mut handshake = client_conn.read_packet()?;
 
@@ -300,14 +302,14 @@ impl MeexProx {
         server_conn.write_packet(&handshake)?;
 
         if next_state == 1 {
-            debug!("state: motd");
+            debug!("switched to motd state");
 
             loop {
                 server_conn.write_packet(&client_conn.read_packet()?)?;
                 client_conn.write_packet(&server_conn.read_packet()?)?;
             }
         } else if next_state == 2 {
-            debug!("state: login");
+            debug!("switched to login state");
 
             let plugin_response_packet = Packet::build(0x02, |packet| {
                 packet.write_i8_varint(-99)?;
@@ -326,15 +328,35 @@ impl MeexProx {
                 Ok(())
             })?;
 
+            let player = Arc::new(Mutex::new(ProxyPlayer::new(
+                client_conn.try_clone().unwrap(),
+                server_conn.try_clone().unwrap(),
+                None,
+                None,
+                Some(server.clone()),
+            )));
+
+            this.lock().unwrap().players.push(player.clone());
+
             thread::spawn({
                 let mut client_conn = client_conn.try_clone().unwrap();
                 let mut server_conn = server_conn.try_clone().unwrap();
+                let player = player.clone();
+                let server = server.clone();
 
                 move || {
-                    move || -> Result<(), ProtocolError> {
+                    let res = || -> Result<(), ProtocolError> {
                         let mut joined = false;
 
                         loop {
+                            if let Some(player_server) = player.lock().unwrap().server.as_ref() {
+                                if player_server.host != server.host {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+
                             let mut packet = match client_conn.read_packet() {
                                 Ok(packet) => packet,
                                 Err(_) => break,
@@ -344,34 +366,35 @@ impl MeexProx {
                                 let name = packet.read_string()?;
                                 let uuid = packet.read_uuid()?;
 
-                                this.lock().unwrap().players.push(ProxyPlayer::new(
-                                    client_conn.get_ref().try_clone().unwrap(),
-                                    server_conn.get_ref().try_clone().unwrap(),
-                                    Some(name),
-                                    Some(uuid),
-                                    Some(server.clone()),
-                                ));
+                                player.lock().unwrap().name = Some(name);
+                                player.lock().unwrap().uuid = Some(uuid);
 
                                 joined = true;
                             }
 
-                            // debug!("[C->S] sending packet {:#04X?} (size: {})", packet.id(), packet.len());
                             server_conn.write_packet(&packet)?;
                         }
-                        error!("serverbound error");
 
                         Ok(())
-                    }()
-                    .or_else(|e| {
-                        error!("serverbound error: {:?}", e);
-                        Ok::<(), ()>(())
-                    })
-                    .unwrap();
+                    }();
+
+                    if res.is_err() {
+                        client_conn.close();
+                        server_conn.close();
+                    }
                 }
             });
 
-            move || -> Result<(), ProtocolError> {
+            let res = || -> Result<(), ProtocolError> {
                 loop {
+                    if let Some(player_server) = player.lock().unwrap().server.as_ref() {
+                        if player_server.host != server.host {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+
                     let mut packet = match server_conn.read_packet() {
                         Ok(packet) => packet,
                         Err(_) => break,
@@ -379,16 +402,9 @@ impl MeexProx {
 
                     if packet.id() == 0x02 {
                         if let PlayerForwarding::PluginResponse = server_config.player_forwarding {
-                            debug!(
-                                "[C->S] sending packet {:#04X?} (size: {})",
-                                plugin_response_packet.id(),
-                                plugin_response_packet.len()
-                            );
                             server_conn.write_packet(&plugin_response_packet)?;
                         }
                     }
-
-                    // debug!("[C<-S] sending packet {:#04X?} (size: {})", packet.id(), packet.len());
 
                     client_conn.write_packet(&packet)?;
 
@@ -406,15 +422,14 @@ impl MeexProx {
                         }
                     }
                 }
-                error!("clientbound error");
 
                 Ok(())
-            }()
-            .or_else(|e| {
-                error!("clientbound error: {:?}", e);
-                Ok::<(), ()>(())
-            })
-            .unwrap();
+            }();
+
+            if res.is_err() {
+                client_conn.close();
+                server_conn.close();
+            }
         }
 
         Ok(())
@@ -431,7 +446,12 @@ impl MeexProx {
             if let Ok(client) = client {
                 let mutex_self_clone = mutex_self.clone();
                 thread::spawn(move || {
-                    Self::accept(mutex_self_clone, client).expect("accept error");
+                    match Self::accept(mutex_self_clone, client) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("connection error: {:?}", e);
+                        }
+                    };
                 });
             }
         }
