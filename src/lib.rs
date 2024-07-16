@@ -1,4 +1,4 @@
-use log::{debug, error, info};
+use log::{error, info};
 use rust_mc_proto::{
     DataBufferReader, DataBufferWriter, MinecraftConnection, Packet, ProtocolError, Zigzag,
 };
@@ -171,30 +171,6 @@ impl ProxyConfig {
         }
         None
     }
-
-    pub fn get_host(&self) -> &str {
-        &self.host
-    }
-
-    pub fn get_talk_enabled(&self) -> bool {
-        self.talk_host.is_some() && self.talk_secret.is_some()
-    }
-
-    pub fn get_talk_host(&self) -> Option<&String> {
-        self.talk_host.as_ref()
-    }
-
-    pub fn get_default_server(&self) -> Option<ProxyServer> {
-        self.default_server.clone()
-    }
-
-    pub fn get_talk_secret(&self) -> Option<&String> {
-        self.talk_secret.as_ref()
-    }
-
-    pub fn get_no_pf_for_ip_connect(&self) -> bool {
-        self.no_pf_for_ip_connect
-    }
 }
 
 pub struct ProxyPlayer {
@@ -202,6 +178,7 @@ pub struct ProxyPlayer {
     pub server_conn: MinecraftConnection<TcpStream>,
     pub name: Option<String>,
     pub uuid: Option<Uuid>,
+    pub protocol_version: u16,
     pub server: Option<ProxyServer>,
 }
 
@@ -211,6 +188,7 @@ impl ProxyPlayer {
         server_conn: MinecraftConnection<TcpStream>,
         name: Option<String>,
         uuid: Option<Uuid>,
+        protocol_version: u16,
         server: Option<ProxyServer>,
     ) -> ProxyPlayer {
         ProxyPlayer {
@@ -218,6 +196,7 @@ impl ProxyPlayer {
             server_conn,
             name,
             uuid,
+            protocol_version,
             server,
         }
     }
@@ -258,8 +237,6 @@ impl MeexProx {
 
         let mut client_conn = MinecraftConnection::new(stream);
 
-        info!("connected stream {}", addr.to_string());
-
         let mut handshake = client_conn.read_packet()?;
 
         if handshake.id() != 0x00 {
@@ -273,7 +250,7 @@ impl MeexProx {
 
         let server = server_config
             .get_server_by_forced_host(&server_address)
-            .or(server_config.get_default_server())
+            .or(server_config.default_server)
             .ok_or(ProxyError::ConfigParse)?;
 
         let mut server_conn = MinecraftConnection::connect(&server.host)?;
@@ -302,15 +279,11 @@ impl MeexProx {
         server_conn.write_packet(&handshake)?;
 
         if next_state == 1 {
-            debug!("switched to motd state");
-
             loop {
                 server_conn.write_packet(&client_conn.read_packet()?)?;
                 client_conn.write_packet(&server_conn.read_packet()?)?;
             }
         } else if next_state == 2 {
-            debug!("switched to login state");
-
             let plugin_response_packet = Packet::build(0x02, |packet| {
                 packet.write_i8_varint(-99)?;
                 packet.write_boolean(true)?;
@@ -333,6 +306,7 @@ impl MeexProx {
                 server_conn.try_clone().unwrap(),
                 None,
                 None,
+                protocol_version,
                 Some(server.clone()),
             )));
 
@@ -341,8 +315,11 @@ impl MeexProx {
             thread::spawn({
                 let mut client_conn = client_conn.try_clone().unwrap();
                 let mut server_conn = server_conn.try_clone().unwrap();
+
                 let player = player.clone();
                 let server = server.clone();
+
+                let this = this.clone();
 
                 move || {
                     let res = || -> Result<(), ProtocolError> {
@@ -366,8 +343,15 @@ impl MeexProx {
                                 let name = packet.read_string()?;
                                 let uuid = packet.read_uuid()?;
 
-                                player.lock().unwrap().name = Some(name);
-                                player.lock().unwrap().uuid = Some(uuid);
+                                player.lock().unwrap().name = Some(name.clone());
+                                player.lock().unwrap().uuid = Some(uuid.clone());
+
+                                info!(
+                                    "{} connected player {} ({})",
+                                    addr.to_string(),
+                                    &name,
+                                    &uuid
+                                );
 
                                 joined = true;
                             }
@@ -381,6 +365,15 @@ impl MeexProx {
                     if res.is_err() {
                         client_conn.close();
                         server_conn.close();
+
+                        if this.lock().unwrap().remove_player(player.clone()) {
+                            match player.lock().unwrap().name.clone() {
+                                Some(name) => {
+                                    info!("{} disconnected player {}", addr.to_string(), name)
+                                }
+                                None => {}
+                            };
+                        }
                     }
                 }
             });
@@ -429,16 +422,33 @@ impl MeexProx {
             if res.is_err() {
                 client_conn.close();
                 server_conn.close();
+
+                if this.lock().unwrap().remove_player(player.clone()) {
+                    match player.lock().unwrap().name.clone() {
+                        Some(name) => info!("{} disconnected player {}", addr.to_string(), name),
+                        None => {}
+                    };
+                }
             }
         }
 
         Ok(())
     }
 
-    pub fn start(self) {
-        let listener = TcpListener::bind(self.config.get_host()).expect("invalid host");
+    pub fn remove_player(&mut self, player: Arc<Mutex<ProxyPlayer>>) -> bool {
+        match self.players.iter().position(|x| Arc::ptr_eq(x, &player)) {
+            Some(i) => {
+                self.players.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
 
-        info!("meexprox started on {}", self.config.get_host());
+    pub fn start(self) {
+        let listener = TcpListener::bind(&self.config.host).expect("invalid host");
+
+        info!("meexprox started on {}", &self.config.host);
 
         let mutex_self = Arc::new(Mutex::new(self));
 
@@ -449,7 +459,7 @@ impl MeexProx {
                     match Self::accept(mutex_self_clone, client) {
                         Ok(_) => {}
                         Err(e) => {
-                            error!("connection error: {:?}", e);
+                            // error!("connection error: {:?}", e);
                         }
                     };
                 });
