@@ -180,6 +180,8 @@ pub struct ProxyPlayer {
     pub uuid: Option<Uuid>,
     pub protocol_version: u16,
     pub server: Option<ProxyServer>,
+    pub shared_secret: Option<Vec<u8>>,
+    pub verify_token: Option<Vec<u8>>,
 }
 
 impl ProxyPlayer {
@@ -190,6 +192,8 @@ impl ProxyPlayer {
         uuid: Option<Uuid>,
         protocol_version: u16,
         server: Option<ProxyServer>,
+        shared_secret: Option<Vec<u8>>,
+        verify_token: Option<Vec<u8>>,
     ) -> ProxyPlayer {
         ProxyPlayer {
             client_conn,
@@ -198,7 +202,270 @@ impl ProxyPlayer {
             uuid,
             protocol_version,
             server,
+            shared_secret,
+            verify_token,
         }
+    }
+
+    pub fn connect_to_ip(
+        player: Arc<Mutex<Self>>,
+        this: Arc<Mutex<MeexProx>>,
+        ip: &str,
+        server_address: &str,
+        server_port: u16,
+    ) -> Result<(), Box<dyn Error>> {
+        Self::connect_to_stream(
+            player,
+            this,
+            TcpStream::connect(ip).or(Err(ProxyError::ServerConnect))?,
+            None,
+            server_address,
+            server_port,
+        )
+    }
+
+    pub fn connect_to_server(
+        player: Arc<Mutex<Self>>,
+        this: Arc<Mutex<MeexProx>>,
+        server: ProxyServer,
+        server_address: &str,
+        server_port: u16,
+    ) -> Result<(), Box<dyn Error>> {
+        Self::connect_to_stream(
+            player,
+            this,
+            TcpStream::connect(&server.host).or(Err(ProxyError::ServerConnect))?,
+            Some(server),
+            server_address,
+            server_port,
+        )
+    }
+
+    pub fn connect_to_stream(
+        player: Arc<Mutex<Self>>,
+        this: Arc<Mutex<MeexProx>>,
+        stream: TcpStream,
+        server: Option<ProxyServer>,
+        server_address: &str,
+        server_port: u16,
+    ) -> Result<(), Box<dyn Error>> {
+        let addr = stream.peer_addr().unwrap();
+
+        let server_config = this.lock().unwrap().config.clone();
+
+        player.lock().unwrap().server_conn = MinecraftConnection::new(stream);
+        player.lock().unwrap().server = server.clone();
+
+        let protocol_version = player.lock().unwrap().protocol_version;
+
+        {
+            let server_config = server_config.clone();
+
+            player
+                .lock()
+                .unwrap()
+                .server_conn
+                .write_packet(&Packet::build(0x00, move |handshake| {
+                    handshake.write_u16_varint(protocol_version)?;
+                    handshake.write_string(&server_address)?;
+                    handshake.write_unsigned_short(server_port)?;
+                    handshake.write_u8_varint(2)?;
+
+                    if let PlayerForwarding::Handshake = server_config.player_forwarding {
+                        if let SocketAddr::V4(addr) = addr {
+                            handshake.write_boolean(false)?; // is ipv6
+                            handshake.write_unsigned_short(addr.port())?; // port
+                            handshake.write_bytes(&addr.ip().octets())?; // octets
+                        } else if let SocketAddr::V6(addr) = addr {
+                            handshake.write_boolean(true)?;
+                            handshake.write_unsigned_short(addr.port())?;
+                            handshake.write_bytes(&addr.ip().octets())?;
+                        }
+                    }
+
+                    Ok(())
+                })?)?;
+        }
+
+        {
+            let locked = player.lock().unwrap();
+
+            match locked.name.as_ref() {
+                Some(player_name) => match locked.uuid.as_ref() {
+                    Some(player_uuid) => {
+                        player
+                            .lock()
+                            .unwrap()
+                            .server_conn
+                            .write_packet(&Packet::build(0x00, move |login| {
+                                login.write_string(&player_name)?;
+                                login.write_uuid(&player_uuid)?;
+                                Ok(())
+                            })?)?;
+                    }
+                    None => {}
+                },
+                None => {}
+            };
+        }
+
+        let plugin_response_packet = Packet::build(0x02, |packet| {
+            packet.write_i8_varint(-99)?;
+            packet.write_boolean(true)?;
+
+            if let SocketAddr::V4(addr) = addr {
+                packet.write_boolean(false)?; // is ipv6
+                packet.write_unsigned_short(addr.port())?; // port
+                packet.write_bytes(&addr.ip().octets())?; // octets
+            } else if let SocketAddr::V6(addr) = addr {
+                packet.write_boolean(true)?;
+                packet.write_unsigned_short(addr.port())?;
+                packet.write_bytes(&addr.ip().octets())?;
+            }
+
+            Ok(())
+        })?;
+
+        let mut client_conn = player.lock().unwrap().client_conn.try_clone().unwrap();
+        let mut server_conn = player.lock().unwrap().server_conn.try_clone().unwrap();
+
+        thread::spawn({
+            let mut client_conn = client_conn.try_clone().unwrap();
+            let mut server_conn = server_conn.try_clone().unwrap();
+
+            let player = player.clone();
+            let this = this.clone();
+            let server = server.clone();
+
+            move || {
+                let res = || -> Result<(), ProtocolError> {
+                    loop {
+                        if server.is_none() && player.lock().unwrap().server.is_some() {
+                            break;
+                        } else if let Some(server) = server.clone() {
+                            if let Some(player_server) = player.lock().unwrap().server.as_ref() {
+                                if player_server.host != server.host {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+
+                        let packet = match client_conn.read_packet() {
+                            Ok(packet) => packet,
+                            Err(_) => break,
+                        };
+
+                        server_conn.write_packet(&packet)?;
+                    }
+
+                    Ok(())
+                }();
+
+                if res.is_err() {
+                    client_conn.close();
+                    server_conn.close();
+
+                    if this.lock().unwrap().remove_player(player.clone()) {
+                        match player.lock().unwrap().name.clone() {
+                            Some(name) => {
+                                info!("{} disconnected player {}", addr.to_string(), name)
+                            }
+                            None => {}
+                        };
+                    }
+                }
+            }
+        });
+
+        let res = || -> Result<(), ProtocolError> {
+            let mut logged = false;
+
+            loop {
+                if server.is_none() && player.lock().unwrap().server.is_some() {
+                    break;
+                } else if let Some(server) = server.clone() {
+                    if let Some(player_server) = player.lock().unwrap().server.as_ref() {
+                        if player_server.host != server.host {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                let mut packet = match server_conn.read_packet() {
+                    Ok(packet) => packet,
+                    Err(_) => break,
+                };
+
+                if packet.id() == 0x02 && !logged {
+                    if let PlayerForwarding::PluginResponse = server_config.player_forwarding {
+                        server_conn.write_packet(&plugin_response_packet)?;
+                    }
+                    logged = true;
+
+                    continue;
+                }
+
+                if packet.id() == 0x01 && !logged {
+                    let locked = player.lock().unwrap();
+
+                    match locked.shared_secret.as_ref() {
+                        Some(shared_secret) => match locked.verify_token.as_ref() {
+                            Some(verify_token) => {
+                                server_conn.write_packet(&Packet::build(0x00, move |resp| {
+                                    resp.write_usize_varint(shared_secret.len())?;
+                                    resp.write_bytes(&shared_secret)?;
+                                    resp.write_usize_varint(verify_token.len())?;
+                                    resp.write_bytes(&verify_token)?;
+                                    Ok(())
+                                })?)?;
+                            }
+                            None => {}
+                        },
+                        None => {}
+                    };
+
+                    continue;
+                }
+
+                if packet.id() == 0x03 {
+                    let threshold = packet.read_isize_varint()?;
+
+                    if threshold >= 0 {
+                        let threshold = threshold.zigzag();
+
+                        server_conn.set_compression(Some(threshold));
+                        client_conn.set_compression(Some(threshold));
+                    } else {
+                        server_conn.set_compression(None);
+                        client_conn.set_compression(None);
+                    }
+
+                    continue;
+                }
+
+                client_conn.write_packet(&packet)?;
+            }
+
+            Ok(())
+        }();
+
+        if res.is_err() {
+            client_conn.close();
+            server_conn.close();
+
+            if this.lock().unwrap().remove_player(player.clone()) {
+                match player.lock().unwrap().name.clone() {
+                    Some(name) => info!("{} disconnected player {}", addr.to_string(), name),
+                    None => {}
+                };
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -308,6 +575,8 @@ impl MeexProx {
                 None,
                 protocol_version,
                 Some(server.clone()),
+                None,
+                None,
             )));
 
             this.lock().unwrap().players.push(player.clone());
@@ -324,6 +593,7 @@ impl MeexProx {
                 move || {
                     let res = || -> Result<(), ProtocolError> {
                         let mut joined = false;
+                        let mut encryption = false;
 
                         loop {
                             if let Some(player_server) = player.lock().unwrap().server.as_ref() {
@@ -354,6 +624,18 @@ impl MeexProx {
                                 );
 
                                 joined = true;
+                            }
+
+                            if packet.id() == 0x01 && !encryption {
+                                let shared_secret_length = packet.read_usize_varint()?;
+                                let shared_secret = packet.read_bytes(shared_secret_length)?;
+                                let verify_token_length = packet.read_usize_varint()?;
+                                let verify_token = packet.read_bytes(verify_token_length)?;
+
+                                player.lock().unwrap().shared_secret = Some(shared_secret.clone());
+                                player.lock().unwrap().verify_token = Some(verify_token.clone());
+
+                                encryption = true;
                             }
 
                             server_conn.write_packet(&packet)?;
