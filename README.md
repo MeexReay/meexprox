@@ -6,4 +6,5 @@ Proxy for minecraft servers on rust
 todo list: (✅ / ❌)
 - ❌ add methods `connect_to_ip`, `connect_to_server`, `connect_to_stream`
 - ❌ make setting `no_pf_for_ip_connect` working
-- ❌ create bukkit plugin for player formatting support
+- ❌ make talk server
+- ❌ create bukkit plugin for player formatting support and talking
