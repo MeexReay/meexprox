@@ -1,3 +1,4 @@
+use derivative::Derivative;
 use log::{error, info};
 use rust_mc_proto::{
     DataBufferReader, DataBufferWriter, MinecraftConnection, Packet, ProtocolError, Zigzag,
@@ -12,11 +13,11 @@ use std::{
 };
 use uuid::Uuid;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ProxyServer {
-    pub name: String,
-    pub host: String,
-    pub forced_host: Option<String>,
+    name: String,
+    host: String,
+    forced_host: Option<String>,
 }
 
 impl ProxyServer {
@@ -33,6 +34,7 @@ impl ProxyServer {
 pub enum ProxyError {
     ConfigParse,
     ServerConnect,
+    EventChanged,
 }
 
 impl std::fmt::Display for ProxyError {
@@ -61,13 +63,13 @@ pub enum PlayerForwarding {
 
 #[derive(Clone)]
 pub struct ProxyConfig {
-    pub host: String,
-    pub servers: Vec<ProxyServer>,
-    pub default_server: Option<ProxyServer>,
-    pub talk_host: Option<String>,
-    pub talk_secret: Option<String>,
-    pub player_forwarding: PlayerForwarding,
-    pub no_pf_for_ip_connect: bool,
+    host: String,
+    servers: Vec<ProxyServer>,
+    default_server: Option<ProxyServer>,
+    talk_host: Option<String>,
+    talk_secret: Option<String>,
+    player_forwarding: PlayerForwarding,
+    no_pf_for_ip_connect: bool,
 }
 
 impl ProxyConfig {
@@ -173,15 +175,19 @@ impl ProxyConfig {
     }
 }
 
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct ProxyPlayer {
-    pub client_conn: MinecraftConnection<TcpStream>,
-    pub server_conn: MinecraftConnection<TcpStream>,
-    pub name: Option<String>,
-    pub uuid: Option<Uuid>,
-    pub protocol_version: u16,
-    pub server: Option<ProxyServer>,
-    pub shared_secret: Option<Vec<u8>>,
-    pub verify_token: Option<Vec<u8>>,
+    #[derivative(Debug = "ignore")]
+    client_conn: MinecraftConnection<TcpStream>,
+    #[derivative(Debug = "ignore")]
+    server_conn: MinecraftConnection<TcpStream>,
+    name: Option<String>,
+    uuid: Option<Uuid>,
+    protocol_version: u16,
+    server: Option<ProxyServer>,
+    shared_secret: Option<Vec<u8>>,
+    verify_token: Option<Vec<u8>>,
 }
 
 impl ProxyPlayer {
@@ -208,12 +214,23 @@ impl ProxyPlayer {
     }
 
     pub fn connect_to_ip(
-        player: Arc<Mutex<Self>>,
-        this: Arc<Mutex<MeexProx>>,
+        player: PlayerMutex,
+        this: MeexProxMutex,
         ip: &str,
         server_address: &str,
         server_port: u16,
     ) -> Result<(), Box<dyn Error>> {
+        let ProxyEvent::PlayerConnectingIPEvent { player: _, ip } = this
+            .lock()
+            .unwrap()
+            .trigger_event(ProxyEvent::PlayerConnectingIPEvent {
+                player: player.clone(),
+                ip: ip.to_string(),
+            })
+        else {
+            return Ok(());
+        };
+
         Self::connect_to_stream(
             player,
             this,
@@ -225,12 +242,23 @@ impl ProxyPlayer {
     }
 
     pub fn connect_to_server(
-        player: Arc<Mutex<Self>>,
-        this: Arc<Mutex<MeexProx>>,
+        player: PlayerMutex,
+        this: MeexProxMutex,
         server: ProxyServer,
         server_address: &str,
         server_port: u16,
     ) -> Result<(), Box<dyn Error>> {
+        let ProxyEvent::PlayerConnectingServerEvent { player: _, server } = this
+            .lock()
+            .unwrap()
+            .trigger_event(ProxyEvent::PlayerConnectingServerEvent {
+                player: player.clone(),
+                server,
+            })
+        else {
+            return Ok(());
+        };
+
         Self::connect_to_stream(
             player,
             this,
@@ -242,8 +270,8 @@ impl ProxyPlayer {
     }
 
     pub fn connect_to_stream(
-        player: Arc<Mutex<Self>>,
-        this: Arc<Mutex<MeexProx>>,
+        player: PlayerMutex,
+        this: MeexProxMutex,
         stream: TcpStream,
         server: Option<ProxyServer>,
         server_address: &str,
@@ -290,23 +318,35 @@ impl ProxyPlayer {
         {
             let locked = player.lock().unwrap();
 
-            match locked.name.as_ref() {
-                Some(player_name) => match locked.uuid.as_ref() {
-                    Some(player_uuid) => {
-                        player
-                            .lock()
-                            .unwrap()
-                            .server_conn
-                            .write_packet(&Packet::build(0x00, move |login| {
-                                login.write_string(&player_name)?;
-                                login.write_uuid(&player_uuid)?;
-                                Ok(())
-                            })?)?;
-                    }
-                    None => {}
-                },
-                None => {}
-            };
+            if let Some(player_name) = locked.name.as_ref() {
+                if let Some(player_uuid) = locked.uuid.as_ref() {
+                    let login_packet = Packet::build(0x00, move |login| {
+                        login.write_string(&player_name)?;
+                        login.write_uuid(&player_uuid)?;
+                        Ok(())
+                    })?;
+
+                    let ProxyEvent::SendServerPacketEvent {
+                        packet: login_packet,
+                        player: _,
+                    } = this
+                        .lock()
+                        .unwrap()
+                        .trigger_event(ProxyEvent::SendServerPacketEvent {
+                            packet: login_packet,
+                            player: player.clone(),
+                        })
+                    else {
+                        return Ok(());
+                    };
+
+                    player
+                        .lock()
+                        .unwrap()
+                        .server_conn
+                        .write_packet(&login_packet)?;
+                }
+            }
         }
 
         let plugin_response_packet = Packet::build(0x02, |packet| {
@@ -357,6 +397,28 @@ impl ProxyPlayer {
                             Err(_) => break,
                         };
 
+                        let ProxyEvent::RecvClientPacketEvent { packet, player: _ } = this
+                            .lock()
+                            .unwrap()
+                            .trigger_event(ProxyEvent::RecvClientPacketEvent {
+                                packet,
+                                player: player.clone(),
+                            })
+                        else {
+                            return Ok(());
+                        };
+
+                        let ProxyEvent::SendServerPacketEvent { packet, player: _ } = this
+                            .lock()
+                            .unwrap()
+                            .trigger_event(ProxyEvent::SendServerPacketEvent {
+                                packet,
+                                player: player.clone(),
+                            })
+                        else {
+                            return Ok(());
+                        };
+
                         server_conn.write_packet(&packet)?;
                     }
 
@@ -368,12 +430,19 @@ impl ProxyPlayer {
                     server_conn.close();
 
                     if this.lock().unwrap().remove_player(player.clone()) {
-                        match player.lock().unwrap().name.clone() {
-                            Some(name) => {
-                                info!("{} disconnected player {}", addr.to_string(), name)
-                            }
-                            None => {}
-                        };
+                        if let Some(name) = player.lock().unwrap().name.clone() {
+                            info!("{} disconnected player {}", addr.to_string(), name);
+
+                            let ProxyEvent::PlayerDisconnectedEvent { player: _ } = this
+                                .lock()
+                                .unwrap()
+                                .trigger_event(ProxyEvent::PlayerDisconnectedEvent {
+                                    player: player.clone(),
+                                })
+                            else {
+                                return;
+                            };
+                        }
                     }
                 }
             }
@@ -395,13 +464,41 @@ impl ProxyPlayer {
                     }
                 }
 
-                let mut packet = match server_conn.read_packet() {
+                let packet = match server_conn.read_packet() {
                     Ok(packet) => packet,
                     Err(_) => break,
                 };
 
+                let ProxyEvent::RecvServerPacketEvent {
+                    mut packet,
+                    player: _,
+                } = this
+                    .lock()
+                    .unwrap()
+                    .trigger_event(ProxyEvent::RecvServerPacketEvent {
+                        packet,
+                        player: player.clone(),
+                    })
+                else {
+                    return Ok(());
+                };
+
                 if packet.id() == 0x02 && !logged {
                     if let PlayerForwarding::PluginResponse = server_config.player_forwarding {
+                        let ProxyEvent::SendServerPacketEvent {
+                            packet: plugin_response_packet,
+                            player: _,
+                        } = this
+                            .lock()
+                            .unwrap()
+                            .trigger_event(ProxyEvent::SendServerPacketEvent {
+                                packet: plugin_response_packet.clone(),
+                                player: player.clone(),
+                            })
+                        else {
+                            return Ok(());
+                        };
+
                         server_conn.write_packet(&plugin_response_packet)?;
                     }
                     logged = true;
@@ -412,21 +509,32 @@ impl ProxyPlayer {
                 if packet.id() == 0x01 && !logged {
                     let locked = player.lock().unwrap();
 
-                    match locked.shared_secret.as_ref() {
-                        Some(shared_secret) => match locked.verify_token.as_ref() {
-                            Some(verify_token) => {
-                                server_conn.write_packet(&Packet::build(0x00, move |resp| {
-                                    resp.write_usize_varint(shared_secret.len())?;
-                                    resp.write_bytes(&shared_secret)?;
-                                    resp.write_usize_varint(verify_token.len())?;
-                                    resp.write_bytes(&verify_token)?;
-                                    Ok(())
-                                })?)?;
-                            }
-                            None => {}
-                        },
-                        None => {}
-                    };
+                    if let Some(shared_secret) = locked.shared_secret.as_ref() {
+                        if let Some(verify_token) = locked.verify_token.as_ref() {
+                            let encryption_response = Packet::build(0x00, move |resp| {
+                                resp.write_usize_varint(shared_secret.len())?;
+                                resp.write_bytes(&shared_secret)?;
+                                resp.write_usize_varint(verify_token.len())?;
+                                resp.write_bytes(&verify_token)?;
+                                Ok(())
+                            })?;
+
+                            let ProxyEvent::SendServerPacketEvent {
+                                packet: encryption_response,
+                                player: _,
+                            } = this.lock().unwrap().trigger_event(
+                                ProxyEvent::SendServerPacketEvent {
+                                    packet: encryption_response,
+                                    player: player.clone(),
+                                },
+                            )
+                            else {
+                                return Ok(());
+                            };
+
+                            server_conn.write_packet(&encryption_response)?;
+                        }
+                    }
 
                     continue;
                 }
@@ -447,6 +555,17 @@ impl ProxyPlayer {
                     continue;
                 }
 
+                let ProxyEvent::SendClientPacketEvent { packet, player: _ } = this
+                    .lock()
+                    .unwrap()
+                    .trigger_event(ProxyEvent::SendClientPacketEvent {
+                        packet,
+                        player: player.clone(),
+                    })
+                else {
+                    return Ok(());
+                };
+
                 client_conn.write_packet(&packet)?;
             }
 
@@ -458,10 +577,19 @@ impl ProxyPlayer {
             server_conn.close();
 
             if this.lock().unwrap().remove_player(player.clone()) {
-                match player.lock().unwrap().name.clone() {
-                    Some(name) => info!("{} disconnected player {}", addr.to_string(), name),
-                    None => {}
-                };
+                if let Some(name) = player.lock().unwrap().name.clone() {
+                    info!("{} disconnected player {}", addr.to_string(), name);
+
+                    let ProxyEvent::PlayerDisconnectedEvent { player: _ } = this
+                        .lock()
+                        .unwrap()
+                        .trigger_event(ProxyEvent::PlayerDisconnectedEvent {
+                            player: player.clone(),
+                        })
+                    else {
+                        return Ok(());
+                    };
+                }
             }
         }
 
@@ -469,10 +597,74 @@ impl ProxyPlayer {
     }
 }
 
+#[derive(Debug)]
+pub enum ProxyEvent {
+    /// client <- proxy <- server
+    ///                 |
+    ///                 RecvServerPacketEvent
+    RecvServerPacketEvent {
+        packet: Packet,
+        player: PlayerMutex,
+    },
+
+    /// client -> proxy -> server
+    ///                 |
+    ///                 SendServerPacketEvent
+    SendServerPacketEvent {
+        packet: Packet,
+        player: PlayerMutex,
+    },
+
+    /// client <- proxy <- server
+    ///        |
+    ///        SendClientPacketEvent
+    SendClientPacketEvent {
+        packet: Packet,
+        player: PlayerMutex,
+    },
+
+    /// client -> proxy -> server
+    ///        |
+    ///        RecvClientPacketEvent
+    RecvClientPacketEvent {
+        packet: Packet,
+        player: PlayerMutex,
+    },
+
+    PlayerConnectedEvent {
+        player: PlayerMutex,
+    },
+
+    PlayerConnectingServerEvent {
+        player: PlayerMutex,
+        server: ProxyServer,
+    },
+
+    PlayerConnectingIPEvent {
+        player: PlayerMutex,
+        ip: String,
+    },
+
+    PlayerDisconnectedEvent {
+        player: PlayerMutex,
+    },
+
+    StatusRequestEvent {
+        status: String,
+        client_address: SocketAddr,
+        server_address: String,
+        server_port: u16,
+    },
+}
+
+pub trait EventListener {
+    fn on_event(&mut self, event: &mut ProxyEvent);
+}
+
 pub struct MeexProx {
-    pub config: ProxyConfig,
-    pub players: Vec<Arc<Mutex<ProxyPlayer>>>,
-    pub listener: Option<TcpListener>,
+    config: ProxyConfig,
+    players: Vec<PlayerMutex>,
+    event_listeners: Vec<Box<dyn EventListener + Send + Sync>>,
 }
 
 impl MeexProx {
@@ -480,11 +672,22 @@ impl MeexProx {
         MeexProx {
             config,
             players: Vec::new(),
-            listener: None,
+            event_listeners: Vec::new(),
         }
     }
 
-    pub fn get_player(&self, uuid: Uuid) -> Option<Arc<Mutex<ProxyPlayer>>> {
+    pub fn add_event_listener(&mut self, event_listener: Box<dyn EventListener + Send + Sync>) {
+        self.event_listeners.push(event_listener);
+    }
+
+    pub fn trigger_event(&mut self, mut event: ProxyEvent) -> ProxyEvent {
+        for event_listener in &mut self.event_listeners {
+            event_listener.on_event(&mut event);
+        }
+        event
+    }
+
+    pub fn get_player(&self, uuid: Uuid) -> Option<PlayerMutex> {
         for player in &self.players {
             if let Some(player_uuid) = player.lock().unwrap().uuid {
                 if player_uuid == uuid {
@@ -495,7 +698,17 @@ impl MeexProx {
         None
     }
 
-    pub fn accept(this: Arc<Mutex<Self>>, stream: TcpStream) -> Result<(), Box<dyn Error>> {
+    pub fn remove_player(&mut self, player: PlayerMutex) -> bool {
+        match self.players.iter().position(|x| Arc::ptr_eq(x, &player)) {
+            Some(i) => {
+                self.players.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn accept_client(this: MeexProxMutex, stream: TcpStream) -> Result<(), Box<dyn Error>> {
         let Ok(addr) = stream.peer_addr() else {
             return Ok(());
         };
@@ -547,8 +760,37 @@ impl MeexProx {
 
         if next_state == 1 {
             loop {
-                server_conn.write_packet(&client_conn.read_packet()?)?;
-                client_conn.write_packet(&server_conn.read_packet()?)?;
+                let client_packet = client_conn.read_packet()?;
+
+                server_conn.write_packet(&client_packet)?;
+
+                let mut server_packet = server_conn.read_packet()?;
+
+                if client_packet.id() == 0x00 {
+                    let server_status = server_packet.read_string()?;
+
+                    let ProxyEvent::StatusRequestEvent {
+                        status: server_status,
+                        client_address: _,
+                        server_address: _,
+                        server_port: _,
+                    } = this
+                        .lock()
+                        .unwrap()
+                        .trigger_event(ProxyEvent::StatusRequestEvent {
+                            status: server_status.clone(),
+                            client_address: addr.clone(),
+                            server_address: server_address.clone(),
+                            server_port,
+                        })
+                    else {
+                        return Ok(());
+                    };
+
+                    server_packet = Packet::build(0x00, |p| p.write_string(&server_status))?;
+                }
+
+                client_conn.write_packet(&server_packet)?;
             }
         } else if next_state == 2 {
             let plugin_response_packet = Packet::build(0x02, |packet| {
@@ -604,9 +846,22 @@ impl MeexProx {
                                 break;
                             }
 
-                            let mut packet = match client_conn.read_packet() {
+                            let packet = match client_conn.read_packet() {
                                 Ok(packet) => packet,
                                 Err(_) => break,
+                            };
+
+                            let ProxyEvent::RecvClientPacketEvent {
+                                mut packet,
+                                player: _,
+                            } = this.lock().unwrap().trigger_event(
+                                ProxyEvent::RecvClientPacketEvent {
+                                    packet,
+                                    player: player.clone(),
+                                },
+                            )
+                            else {
+                                return Ok(());
                             };
 
                             if packet.id() == 0x00 && !joined {
@@ -623,6 +878,16 @@ impl MeexProx {
                                     &uuid
                                 );
 
+                                let ProxyEvent::PlayerConnectedEvent { player: _ } = this
+                                    .lock()
+                                    .unwrap()
+                                    .trigger_event(ProxyEvent::PlayerConnectedEvent {
+                                        player: player.clone(),
+                                    })
+                                else {
+                                    return Ok(());
+                                };
+
                                 joined = true;
                             }
 
@@ -638,6 +903,17 @@ impl MeexProx {
                                 encryption = true;
                             }
 
+                            let ProxyEvent::SendServerPacketEvent { packet, player: _ } = this
+                                .lock()
+                                .unwrap()
+                                .trigger_event(ProxyEvent::SendServerPacketEvent {
+                                    packet,
+                                    player: player.clone(),
+                                })
+                            else {
+                                return Ok(());
+                            };
+
                             server_conn.write_packet(&packet)?;
                         }
 
@@ -649,12 +925,19 @@ impl MeexProx {
                         server_conn.close();
 
                         if this.lock().unwrap().remove_player(player.clone()) {
-                            match player.lock().unwrap().name.clone() {
-                                Some(name) => {
-                                    info!("{} disconnected player {}", addr.to_string(), name)
-                                }
-                                None => {}
-                            };
+                            if let Some(name) = player.lock().unwrap().name.clone() {
+                                info!("{} disconnected player {}", addr.to_string(), name);
+
+                                let ProxyEvent::PlayerDisconnectedEvent { player: _ } = this
+                                    .lock()
+                                    .unwrap()
+                                    .trigger_event(ProxyEvent::PlayerDisconnectedEvent {
+                                        player: player.clone(),
+                                    })
+                                else {
+                                    return;
+                                };
+                            }
                         }
                     }
                 }
@@ -670,16 +953,54 @@ impl MeexProx {
                         break;
                     }
 
-                    let mut packet = match server_conn.read_packet() {
+                    let packet = match server_conn.read_packet() {
                         Ok(packet) => packet,
                         Err(_) => break,
                     };
 
+                    let ProxyEvent::RecvServerPacketEvent { packet, player: _ } = this
+                        .lock()
+                        .unwrap()
+                        .trigger_event(ProxyEvent::RecvServerPacketEvent {
+                            packet,
+                            player: player.clone(),
+                        })
+                    else {
+                        return Ok(());
+                    };
+
                     if packet.id() == 0x02 {
                         if let PlayerForwarding::PluginResponse = server_config.player_forwarding {
+                            let ProxyEvent::SendServerPacketEvent {
+                                packet: plugin_response_packet,
+                                player: _,
+                            } = this.lock().unwrap().trigger_event(
+                                ProxyEvent::SendServerPacketEvent {
+                                    packet: plugin_response_packet.clone(),
+                                    player: player.clone(),
+                                },
+                            )
+                            else {
+                                return Ok(());
+                            };
+
                             server_conn.write_packet(&plugin_response_packet)?;
                         }
                     }
+
+                    let ProxyEvent::SendClientPacketEvent {
+                        mut packet,
+                        player: _,
+                    } = this
+                        .lock()
+                        .unwrap()
+                        .trigger_event(ProxyEvent::SendClientPacketEvent {
+                            packet,
+                            player: player.clone(),
+                        })
+                    else {
+                        return Ok(());
+                    };
 
                     client_conn.write_packet(&packet)?;
 
@@ -706,25 +1027,24 @@ impl MeexProx {
                 server_conn.close();
 
                 if this.lock().unwrap().remove_player(player.clone()) {
-                    match player.lock().unwrap().name.clone() {
-                        Some(name) => info!("{} disconnected player {}", addr.to_string(), name),
-                        None => {}
-                    };
+                    if let Some(name) = player.lock().unwrap().name.clone() {
+                        info!("{} disconnected player {}", addr.to_string(), name);
+
+                        let ProxyEvent::PlayerDisconnectedEvent { player: _ } = this
+                            .lock()
+                            .unwrap()
+                            .trigger_event(ProxyEvent::PlayerDisconnectedEvent {
+                                player: player.clone(),
+                            })
+                        else {
+                            return Ok(());
+                        };
+                    }
                 }
             }
         }
 
         Ok(())
-    }
-
-    pub fn remove_player(&mut self, player: Arc<Mutex<ProxyPlayer>>) -> bool {
-        match self.players.iter().position(|x| Arc::ptr_eq(x, &player)) {
-            Some(i) => {
-                self.players.remove(i);
-                true
-            }
-            None => false,
-        }
     }
 
     pub fn start(self) {
@@ -738,9 +1058,9 @@ impl MeexProx {
             if let Ok(client) = client {
                 let mutex_self_clone = mutex_self.clone();
                 thread::spawn(move || {
-                    match Self::accept(mutex_self_clone, client) {
+                    match Self::accept_client(mutex_self_clone, client) {
                         Ok(_) => {}
-                        Err(e) => {
+                        Err(_) => {
                             // error!("connection error: {:?}", e);
                         }
                     };
@@ -749,3 +1069,6 @@ impl MeexProx {
         }
     }
 }
+
+pub type PlayerMutex = Arc<Mutex<ProxyPlayer>>;
+pub type MeexProxMutex = Arc<Mutex<MeexProx>>;
