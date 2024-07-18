@@ -1,14 +1,23 @@
 use log::debug;
-use meexprox::{EventListener, MeexProx, ProxyConfig, ProxyEvent, ProxyEvent::*};
+use meexprox::{
+    EventListener, MeexProx, MeexProxMutex, ProxyConfig,
+    ProxyEvent::{self, *},
+    ProxyPlayer,
+};
+use rust_mc_proto::DataBufferReader;
 use simplelog::{
     ColorChoice, CombinedLogger, Config, LevelFilter, TermLogger, TerminalMode, WriteLogger,
 };
-use std::fs::File;
+use std::{error::Error, fs::File};
 
 pub struct MyEventListener {}
 
 impl EventListener for MyEventListener {
-    fn on_event(&mut self, event: &mut ProxyEvent) {
+    fn on_event(
+        &mut self,
+        this: MeexProxMutex,
+        event: &mut ProxyEvent,
+    ) -> Result<(), Box<dyn Error>> {
         match event {
             RecvServerPacketEvent { packet, player } => {
                 // debug!("recv server packet event");
@@ -21,18 +30,33 @@ impl EventListener for MyEventListener {
             }
             RecvClientPacketEvent { packet, player } => {
                 // debug!("recv client packet event");
+
+                if packet.id() == 0x03 || packet.id() == 0x04 {
+                    let command = packet.read_string()?;
+
+                    if command == "reconnect" {
+                        // ProxyPlayer::connect_to_server(
+                        //     player.clone(),
+                        //     this.clone(),
+                        //     player.lock().unwrap().server().unwrap().clone(),
+                        //     "localhost",
+                        //     25565,
+                        // )
+                        // .unwrap();
+                    }
+                }
             }
             PlayerConnectedEvent { player } => {
-                debug!("player connected event");
+                debug!("player connected");
             }
             PlayerConnectingServerEvent { player, server } => {
-                debug!("player connecting server event");
+                debug!("player connecting server");
             }
             PlayerConnectingIPEvent { player, ip } => {
-                debug!("player connecting ip event");
+                debug!("player connecting ip");
             }
             PlayerDisconnectedEvent { player } => {
-                debug!("player disconnected event");
+                debug!("player disconnected");
             }
             StatusRequestEvent {
                 status,
@@ -40,9 +64,11 @@ impl EventListener for MyEventListener {
                 server_address,
                 server_port,
             } => {
-                debug!("status request event");
+                debug!("status request");
             }
         }
+
+        Ok(())
     }
 }
 
