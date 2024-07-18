@@ -35,14 +35,8 @@ impl EventListener for MyEventListener {
                     let command = packet.read_string()?;
 
                     if command == "reconnect" {
-                        // ProxyPlayer::connect_to_server(
-                        //     player.clone(),
-                        //     this.clone(),
-                        //     player.lock().unwrap().server().unwrap().clone(),
-                        //     "localhost",
-                        //     25565,
-                        // )
-                        // .unwrap();
+                        ProxyPlayer::reconnect(player.clone(), this.clone(), "localhost", 25565)
+                            .unwrap();
                     }
                 }
             }

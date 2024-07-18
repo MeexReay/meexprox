@@ -298,23 +298,107 @@ impl ProxyPlayer {
     }
 
     pub fn connect_to_ip(
-        player: PlayerMutex,
-        this: MeexProxMutex,
+        this: PlayerMutex,
+        meexprox: MeexProxMutex,
         ip: &str,
         server_address: &str,
         server_port: u16,
     ) -> Result<(), Box<dyn Error>> {
-        todo!()
+        this.lock()
+            .unwrap()
+            .connection_id
+            .fetch_add(1, Ordering::Relaxed);
+
+        this.lock().unwrap().server_conn.close();
+        this.lock().unwrap().server_conn = MinecraftConnection::connect(ip)?;
+
+        thread::spawn({
+            let player_forwarding = meexprox.lock().unwrap().config.player_forwarding.clone();
+            let server_address = server_address.to_string();
+
+            move || {
+                let _ = ProxyPlayer::connect(
+                    this,
+                    meexprox,
+                    player_forwarding,
+                    &server_address,
+                    server_port,
+                    false,
+                );
+            }
+        });
+
+        Ok(())
     }
 
     pub fn connect_to_server(
-        player: PlayerMutex,
-        this: MeexProxMutex,
+        this: PlayerMutex,
+        meexprox: MeexProxMutex,
         server: ProxyServer,
         server_address: &str,
         server_port: u16,
     ) -> Result<(), Box<dyn Error>> {
-        todo!()
+        this.lock()
+            .unwrap()
+            .connection_id
+            .fetch_add(1, Ordering::Relaxed);
+
+        this.lock().unwrap().server = Some(server.clone());
+
+        this.lock().unwrap().server_conn.close();
+        this.lock().unwrap().server_conn = MinecraftConnection::connect(&server.host)?;
+
+        thread::spawn({
+            let player_forwarding = meexprox.lock().unwrap().config.player_forwarding.clone();
+            let server_address = server_address.to_string();
+
+            move || {
+                let _ = ProxyPlayer::connect(
+                    this,
+                    meexprox,
+                    player_forwarding,
+                    &server_address,
+                    server_port,
+                    false,
+                );
+            }
+        });
+
+        Ok(())
+    }
+
+    pub fn reconnect(
+        this: PlayerMutex,
+        meexprox: MeexProxMutex,
+        server_address: &str,
+        server_port: u16,
+    ) -> Result<(), Box<dyn Error>> {
+        this.lock()
+            .unwrap()
+            .connection_id
+            .fetch_add(1, Ordering::Relaxed);
+
+        this.lock().unwrap().server_conn.close();
+        this.lock().unwrap().server_conn =
+            MinecraftConnection::connect(&this.lock().unwrap().server.as_ref().unwrap().host)?;
+
+        thread::spawn({
+            let player_forwarding = meexprox.lock().unwrap().config.player_forwarding.clone();
+            let server_address = server_address.to_string();
+
+            move || {
+                let _ = ProxyPlayer::connect(
+                    this,
+                    meexprox,
+                    player_forwarding,
+                    &server_address,
+                    server_port,
+                    false,
+                );
+            }
+        });
+
+        Ok(())
     }
 
     fn send_handshake(
