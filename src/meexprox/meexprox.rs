@@ -1,6 +1,6 @@
 use super::{EventListener, PlayerForwarding, ProxyConfig, ProxyError, ProxyEvent, ProxyServer};
 use derivative::Derivative;
-use log::info;
+use log::{debug, info};
 use rust_mc_proto::{
     DataBufferReader, DataBufferWriter, MinecraftConnection, Packet, ProtocolError, Zigzag,
 };
@@ -107,6 +107,14 @@ impl ProxyPlayer {
         server_address: &str,
         server_port: u16,
     ) -> Result<(), Box<dyn Error>> {
+        let (ip, cancel) =
+            ProxyEvent::player_connecting_ip(meexprox.clone(), this.clone(), ip.to_string());
+        let ip = &ip;
+
+        if cancel {
+            return Ok(());
+        }
+
         this.lock()
             .unwrap()
             .connection_id
@@ -141,6 +149,13 @@ impl ProxyPlayer {
         server_address: &str,
         server_port: u16,
     ) -> Result<(), Box<dyn Error>> {
+        let (server, cancel) =
+            ProxyEvent::player_connecting_server(meexprox.clone(), this.clone(), server);
+
+        if cancel {
+            return Ok(());
+        }
+
         this.lock()
             .unwrap()
             .connection_id
@@ -182,14 +197,21 @@ impl ProxyPlayer {
             .fetch_add(1, Ordering::Relaxed);
 
         this.lock().unwrap().server_conn.close();
-        this.lock().unwrap().server_conn =
-            MinecraftConnection::connect(this.lock().unwrap().server().unwrap().host())?;
+
+        let server_host = this.lock().unwrap().server().unwrap().host().to_string();
+        println!("connect");
+        this.lock().unwrap().server_conn = MinecraftConnection::connect(&server_host)?;
+        println!("connected");
 
         thread::spawn({
-            let player_forwarding = meexprox.lock().unwrap().config.player_forwarding().clone();
+            println!("connecting1");
+            let player_forwarding = meexprox.lock().unwrap().config.player_forwarding().clone(); // deadlock here
+            println!("connecting2");
             let server_address = server_address.to_string();
+            println!("connecting3");
 
             move || {
+                println!("connecting4");
                 let _ = ProxyPlayer::connect(
                     this,
                     meexprox,
@@ -560,6 +582,15 @@ impl MeexProx {
                 None,
                 Arc::new(AtomicUsize::new(0)),
             )));
+
+            let (server, cancel) =
+                ProxyEvent::player_connecting_server(this.clone(), player.clone(), server.clone());
+
+            if cancel {
+                return Ok(());
+            }
+
+            player.lock().unwrap().server = Some(server);
 
             this.lock().unwrap().players.push(player.clone());
 

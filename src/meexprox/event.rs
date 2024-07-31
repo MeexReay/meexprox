@@ -101,6 +101,29 @@ impl ProxyEvent {
         (status, cancel.load(Ordering::Relaxed))
     }
 
+    pub fn player_connecting_ip(
+        meexprox: MeexProxMutex,
+        player: PlayerMutex,
+        ip: String,
+    ) -> (String, bool) {
+        let ProxyEvent::PlayerConnectingIPEvent {
+            ip,
+            player: _,
+            cancel,
+        } = MeexProx::trigger_event(
+            meexprox,
+            ProxyEvent::PlayerConnectingIPEvent {
+                ip: ip.clone(),
+                player,
+                cancel: AtomicBool::from(false),
+            },
+        )
+        else {
+            return (ip, false);
+        };
+        (ip, cancel.load(Ordering::Relaxed))
+    }
+
     pub fn player_connecting_server(
         meexprox: MeexProxMutex,
         player: PlayerMutex,
