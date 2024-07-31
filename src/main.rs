@@ -8,7 +8,7 @@ use rust_mc_proto::DataBufferReader;
 use simplelog::{
     ColorChoice, CombinedLogger, Config, LevelFilter, TermLogger, TerminalMode, WriteLogger,
 };
-use std::{error::Error, fs::File};
+use std::{error::Error, fs::File, sync::atomic::Ordering};
 
 pub struct MyEventListener {}
 
@@ -22,10 +22,18 @@ impl EventListener for MyEventListener {
             RecvServerPacketEvent { packet, player } => {
                 // debug!("recv server packet event");
             }
-            SendServerPacketEvent { packet, player } => {
+            SendServerPacketEvent {
+                packet,
+                player,
+                cancel,
+            } => {
                 // debug!("send server packet event");
             }
-            SendClientPacketEvent { packet, player } => {
+            SendClientPacketEvent {
+                packet,
+                player,
+                cancel,
+            } => {
                 // debug!("send client packet event");
             }
             RecvClientPacketEvent { packet, player } => {
@@ -35,6 +43,7 @@ impl EventListener for MyEventListener {
                     let command = packet.read_string()?;
 
                     if command == "reconnect" {
+                        println!("reconnect wow");
                         ProxyPlayer::reconnect(player.clone(), this.clone(), "localhost", 25565)
                             .unwrap();
                     }
@@ -43,10 +52,14 @@ impl EventListener for MyEventListener {
             PlayerConnectedEvent { player } => {
                 debug!("player connected");
             }
-            PlayerConnectingServerEvent { player, server } => {
+            PlayerConnectingServerEvent {
+                player,
+                server,
+                cancel,
+            } => {
                 debug!("player connecting server");
             }
-            PlayerConnectingIPEvent { player, ip } => {
+            PlayerConnectingIPEvent { player, ip, cancel } => {
                 debug!("player connecting ip");
             }
             PlayerDisconnectedEvent { player } => {
@@ -57,8 +70,10 @@ impl EventListener for MyEventListener {
                 client_address,
                 server_address,
                 server_port,
+                cancel,
             } => {
                 debug!("status request");
+                *status = String::from("123123");
             }
         }
 
