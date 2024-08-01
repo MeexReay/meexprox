@@ -1,6 +1,7 @@
 use super::{EventListener, PlayerForwarding, ProxyConfig, ProxyError, ProxyEvent, ProxyServer};
 use derivative::Derivative;
 use log::{debug, info};
+use no_deadlocks::Mutex;
 use rust_mc_proto::{
     DataBufferReader, DataBufferWriter, MinecraftConnection, Packet, ProtocolError, Zigzag,
 };
@@ -9,7 +10,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     thread,
 };
@@ -61,7 +62,7 @@ impl ProxyPlayer {
     }
 
     pub fn server_conn(&self) -> &MinecraftConnection<TcpStream> {
-        &self.client_conn
+        &self.server_conn
     }
 
     pub fn client_conn_mut(&mut self) -> &mut MinecraftConnection<TcpStream> {
@@ -69,7 +70,7 @@ impl ProxyPlayer {
     }
 
     pub fn server_conn_mut(&mut self) -> &mut MinecraftConnection<TcpStream> {
-        &mut self.client_conn
+        &mut self.server_conn
     }
 
     pub fn name(&self) -> Option<&String> {
@@ -191,27 +192,29 @@ impl ProxyPlayer {
         server_address: &str,
         server_port: u16,
     ) -> Result<(), Box<dyn Error>> {
-        this.lock()
-            .unwrap()
-            .connection_id
-            .fetch_add(1, Ordering::Relaxed);
+        {
+            let mut player = this.lock().unwrap();
+            player.connection_id.fetch_add(1, Ordering::Relaxed);
+            player.server_conn.close();
 
-        this.lock().unwrap().server_conn.close();
-
-        let server_host = this.lock().unwrap().server().unwrap().host().to_string();
-        println!("connect");
-        this.lock().unwrap().server_conn = MinecraftConnection::connect(&server_host)?;
-        println!("connected");
+            let server_host = player.server().unwrap().host().to_string();
+            // println!("connect");
+            player.server_conn = MinecraftConnection::connect(&server_host)?;
+            // println!("connected");
+        }
 
         thread::spawn({
-            println!("connecting1");
-            let player_forwarding = meexprox.lock().unwrap().config.player_forwarding().clone(); // deadlock here
-            println!("connecting2");
+            // println!("connecting1");
+            let player_forwarding = {
+                let meexprox_guard = meexprox.lock().unwrap();
+                meexprox_guard.config.player_forwarding().clone()
+            };
+            // println!("connecting2");
             let server_address = server_address.to_string();
-            println!("connecting3");
+            // println!("connecting3");
 
             move || {
-                println!("connecting4");
+                // println!("connecting4");
                 let _ = ProxyPlayer::connect(
                     this,
                     meexprox,
@@ -298,13 +301,10 @@ impl ProxyPlayer {
         let mut client_conn = this.lock().unwrap().client_conn.try_clone().unwrap();
         let mut server_conn = this.lock().unwrap().server_conn.try_clone().unwrap();
 
-        let server = this.lock().unwrap().server.clone();
-
         let addr = client_conn.get_ref().peer_addr().unwrap();
         let Some(name) = this.lock().unwrap().name.clone() else {
             return Ok(());
         };
-        let server_config = meexprox.lock().unwrap().config.clone();
 
         let atomic_connection_id = this.lock().unwrap().connection_id.clone();
         let connection_id = this.lock().unwrap().connection_id.load(Ordering::Relaxed);
@@ -347,7 +347,6 @@ impl ProxyPlayer {
 
                 if packet.id() == 0x03 {
                     let threshold = packet.read_isize_varint()?;
-
                     if threshold >= 0 {
                         let threshold = threshold.zigzag();
 

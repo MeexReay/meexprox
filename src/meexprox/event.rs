@@ -6,7 +6,6 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-#[derive(Debug)]
 pub enum ProxyEvent {
     /// client <- proxy <- server \
     /// &nbsp;               | \
