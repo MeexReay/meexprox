@@ -1,6 +1,8 @@
 use super::ProxyError;
+
 use serde_yml::Value;
 use std::fs;
+use std::path::Path;
 
 #[derive(Clone, Debug)]
 pub struct ProxyServer {
@@ -105,8 +107,8 @@ impl ProxyConfig {
         self.no_pf_for_ip_connect
     }
 
-    pub fn load(path: &str) -> Result<ProxyConfig, Box<dyn std::error::Error>> {
-        let data = serde_yml::from_str::<Value>(&fs::read_to_string(path)?)?;
+    pub fn load_data(data: String) -> Result<ProxyConfig, Box<dyn std::error::Error>> {
+        let data = serde_yml::from_str::<Value>(&data)?;
         let data = data.as_mapping().ok_or(ProxyError::ConfigParse)?;
 
         let host = extract_string!(data, "host").ok_or(ProxyError::ConfigParse)?;
@@ -163,6 +165,10 @@ impl ProxyConfig {
             player_forwarding,
             no_pf_for_ip_connect,
         ))
+    }
+
+    pub fn load(path: impl AsRef<Path>) -> Result<ProxyConfig, Box<dyn std::error::Error>> {
+        Self::load_data(fs::read_to_string(path)?)
     }
 
     pub fn get_server_by_name(&self, name: &str) -> Option<ProxyServer> {

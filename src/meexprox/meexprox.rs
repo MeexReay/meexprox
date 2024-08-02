@@ -14,6 +14,7 @@ use std::{
     },
     thread,
 };
+use tokio::task::AbortHandle;
 use uuid::Uuid;
 
 #[derive(Derivative)]
@@ -23,26 +24,26 @@ pub struct ProxyPlayer {
     client_conn: MinecraftConnection<TcpStream>,
     #[derivative(Debug = "ignore")]
     server_conn: MinecraftConnection<TcpStream>,
+    connection_threads: Vec<AbortHandle>,
     name: Option<String>,
     uuid: Option<Uuid>,
     protocol_version: u16,
     server: Option<ProxyServer>,
     shared_secret: Option<Vec<u8>>,
     verify_token: Option<Vec<u8>>,
-    connection_id: Arc<AtomicUsize>,
 }
 
 impl ProxyPlayer {
     pub fn new(
         client_conn: MinecraftConnection<TcpStream>,
         server_conn: MinecraftConnection<TcpStream>,
+        connection_threads: Vec<AbortHandle>,
         name: Option<String>,
         uuid: Option<Uuid>,
         protocol_version: u16,
         server: Option<ProxyServer>,
         shared_secret: Option<Vec<u8>>,
         verify_token: Option<Vec<u8>>,
-        connection_id: Arc<AtomicUsize>,
     ) -> ProxyPlayer {
         ProxyPlayer {
             client_conn,
@@ -53,7 +54,7 @@ impl ProxyPlayer {
             server,
             shared_secret,
             verify_token,
-            connection_id,
+            connection_threads,
         }
     }
 
@@ -97,8 +98,8 @@ impl ProxyPlayer {
         self.verify_token.as_ref()
     }
 
-    pub fn connection_id(&self) -> Arc<AtomicUsize> {
-        self.connection_id.clone()
+    pub fn connection_threads(&mut self) -> &mut Vec<AbortHandle> {
+        &mut self.connection_threads
     }
 
     pub fn connect_to_ip(
@@ -116,10 +117,9 @@ impl ProxyPlayer {
             return Ok(());
         }
 
-        this.lock()
-            .unwrap()
-            .connection_id
-            .fetch_add(1, Ordering::Relaxed);
+        for thread in &mut this.lock().unwrap().connection_threads {
+            thread.abort();
+        }
 
         this.lock().unwrap().server_conn.close();
         this.lock().unwrap().server_conn = MinecraftConnection::connect(ip)?;
@@ -157,14 +157,12 @@ impl ProxyPlayer {
             return Ok(());
         }
 
-        this.lock()
-            .unwrap()
-            .connection_id
-            .fetch_add(1, Ordering::Relaxed);
+        for thread in &mut this.lock().unwrap().connection_threads {
+            thread.abort();
+        }
+        this.lock().unwrap().server_conn.close();
 
         this.lock().unwrap().server = Some(server.clone());
-
-        this.lock().unwrap().server_conn.close();
         this.lock().unwrap().server_conn = MinecraftConnection::connect(server.host())?;
 
         thread::spawn({
@@ -192,29 +190,19 @@ impl ProxyPlayer {
         server_address: &str,
         server_port: u16,
     ) -> Result<(), Box<dyn Error>> {
-        {
-            let mut player = this.lock().unwrap();
-            player.connection_id.fetch_add(1, Ordering::Relaxed);
-            player.server_conn.close();
-
-            let server_host = player.server().unwrap().host().to_string();
-            // println!("connect");
-            player.server_conn = MinecraftConnection::connect(&server_host)?;
-            // println!("connected");
+        for thread in &mut this.lock().unwrap().connection_threads {
+            thread.abort();
         }
+        this.lock().unwrap().server_conn.close();
+
+        let server_host = this.lock().unwrap().server().unwrap().host().to_string();
+        this.lock().unwrap().server_conn = MinecraftConnection::connect(&server_host)?;
 
         thread::spawn({
-            // println!("connecting1");
-            let player_forwarding = {
-                let meexprox_guard = meexprox.lock().unwrap();
-                meexprox_guard.config.player_forwarding().clone()
-            };
-            // println!("connecting2");
+            let player_forwarding = meexprox.lock().unwrap().config.player_forwarding().clone();
             let server_address = server_address.to_string();
-            // println!("connecting3");
 
             move || {
-                // println!("connecting4");
                 let _ = ProxyPlayer::connect(
                     this,
                     meexprox,
@@ -306,9 +294,6 @@ impl ProxyPlayer {
             return Ok(());
         };
 
-        let atomic_connection_id = this.lock().unwrap().connection_id.clone();
-        let connection_id = this.lock().unwrap().connection_id.load(Ordering::Relaxed);
-
         if !logged {
             ProxyPlayer::send_handshake(
                 this.clone(),
@@ -373,23 +358,20 @@ impl ProxyPlayer {
             }
         }
 
-        thread::spawn({
-            let mut client_conn = client_conn.try_clone().unwrap();
-            let mut server_conn = server_conn.try_clone().unwrap();
+        let mut handles = Vec::new();
 
-            let this = this.clone();
-            let meexprox = meexprox.clone();
-            let name = name.clone();
-            let atomic_connection_id = atomic_connection_id.clone();
+        handles.push(
+            tokio::spawn({
+                let mut client_conn = client_conn.try_clone().unwrap();
+                let mut server_conn = server_conn.try_clone().unwrap();
 
-            move || {
-                let _ = || -> Result<(), ProtocolError> {
-                    while atomic_connection_id.load(Ordering::Relaxed) == connection_id {
-                        let packet = match client_conn.read_packet() {
-                            Ok(packet) => packet,
-                            Err(_) => break,
-                        };
+                let this = this.clone();
+                let meexprox = meexprox.clone();
+                let name = name.clone();
+                let addr = addr.clone();
 
+                async move {
+                    while let Ok(packet) = client_conn.read_packet() {
                         let packet =
                             ProxyEvent::recv_client_packet(meexprox.clone(), packet, this.clone());
 
@@ -397,48 +379,56 @@ impl ProxyPlayer {
                             ProxyEvent::send_server_packet(meexprox.clone(), packet, this.clone());
 
                         if !cancel {
-                            server_conn.write_packet(&packet)?;
+                            match server_conn.write_packet(&packet) {
+                                Ok(_) => {}
+                                Err(_) => {
+                                    break;
+                                }
+                            };
                         }
                     }
 
-                    Ok(())
-                }();
-
-                if atomic_connection_id.load(Ordering::Relaxed) == connection_id {
                     if meexprox.lock().unwrap().remove_player(this.clone()) {
                         info!("{} disconnected player {}", addr.to_string(), name);
                         ProxyEvent::player_disconnected(meexprox.clone(), this.clone());
                     }
                 }
-            }
-        });
+            })
+            .abort_handle(),
+        );
 
-        let _ = || -> Result<(), ProtocolError> {
-            while atomic_connection_id.load(Ordering::Relaxed) == connection_id {
-                let packet = match server_conn.read_packet() {
-                    Ok(packet) => packet,
-                    Err(_) => break,
-                };
+        handles.push(
+            tokio::spawn({
+                let this = this.clone();
 
-                let packet = ProxyEvent::recv_server_packet(meexprox.clone(), packet, this.clone());
+                async move {
+                    while let Ok(packet) = server_conn.read_packet() {
+                        let packet =
+                            ProxyEvent::recv_server_packet(meexprox.clone(), packet, this.clone());
 
-                let (packet, cancel) =
-                    ProxyEvent::send_client_packet(meexprox.clone(), packet, this.clone());
+                        let (packet, cancel) =
+                            ProxyEvent::send_client_packet(meexprox.clone(), packet, this.clone());
 
-                if !cancel {
-                    client_conn.write_packet(&packet)?;
+                        if !cancel {
+                            match client_conn.write_packet(&packet) {
+                                Ok(_) => {}
+                                Err(_) => {
+                                    break;
+                                }
+                            };
+                        }
+                    }
+
+                    if meexprox.lock().unwrap().remove_player(this.clone()) {
+                        info!("{} disconnected player {}", addr.to_string(), name);
+                        ProxyEvent::player_disconnected(meexprox.clone(), this.clone());
+                    }
                 }
-            }
+            })
+            .abort_handle(),
+        );
 
-            Ok(())
-        }();
-
-        if atomic_connection_id.load(Ordering::Relaxed) == connection_id {
-            if meexprox.lock().unwrap().remove_player(this.clone()) {
-                info!("{} disconnected player {}", addr.to_string(), name);
-                ProxyEvent::player_disconnected(meexprox.clone(), this.clone());
-            }
-        }
+        this.lock().unwrap().connection_threads = handles;
 
         Ok(())
     }
@@ -573,13 +563,13 @@ impl MeexProx {
             let player = Arc::new(Mutex::new(ProxyPlayer::new(
                 client_conn.try_clone().unwrap(),
                 server_conn.try_clone().unwrap(),
+                Vec::new(),
                 None,
                 None,
                 protocol_version,
                 Some(server.clone()),
                 None,
                 None,
-                Arc::new(AtomicUsize::new(0)),
             )));
 
             let (server, cancel) =
@@ -642,27 +632,23 @@ impl MeexProx {
             //     return Ok(());
             // }
 
-            thread::spawn({
-                let this = this.clone();
+            let this = this.clone();
 
-                move || {
-                    info!(
-                        "{} connected player {}",
-                        addr.to_string(),
-                        player.lock().unwrap().name.clone().unwrap()
-                    );
-                    ProxyEvent::player_connected(this.clone(), player.clone());
+            info!(
+                "{} connected player {}",
+                addr.to_string(),
+                player.lock().unwrap().name.clone().unwrap()
+            );
+            ProxyEvent::player_connected(this.clone(), player.clone());
 
-                    let _ = ProxyPlayer::connect(
-                        player,
-                        this,
-                        server_config.player_forwarding().clone(),
-                        &server_address,
-                        server_port,
-                        true,
-                    );
-                }
-            });
+            let _ = ProxyPlayer::connect(
+                player,
+                this,
+                server_config.player_forwarding().clone(),
+                &server_address,
+                server_port,
+                true,
+            );
         }
 
         Ok(())

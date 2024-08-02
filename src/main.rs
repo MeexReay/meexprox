@@ -8,7 +8,12 @@ use rust_mc_proto::DataBufferReader;
 use simplelog::{
     ColorChoice, CombinedLogger, Config, LevelFilter, TermLogger, TerminalMode, WriteLogger,
 };
-use std::{error::Error, fs::File, sync::atomic::Ordering};
+use std::{
+    error::Error,
+    fs::{self, File},
+    path::Path,
+    sync::atomic::Ordering,
+};
 
 pub struct MyEventListener {}
 
@@ -73,7 +78,6 @@ impl EventListener for MyEventListener {
                 cancel,
             } => {
                 debug!("status request");
-                *status = String::from("123123");
             }
         }
 
@@ -97,7 +101,14 @@ fn main() {
     ])
     .unwrap();
 
-    let config = ProxyConfig::load("config.yml").expect("config parse error");
+    let config_path = Path::new("config.yml");
+
+    if !config_path.exists() {
+        fs::write(config_path, include_bytes!("../default_config.yml"))
+            .expect("config write error");
+    }
+
+    let config = ProxyConfig::load(config_path).expect("config parse error");
 
     let mut meexprox = MeexProx::new(config);
 
