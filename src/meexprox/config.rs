@@ -1,45 +1,32 @@
-use super::ProxyError;
-
 use serde_yml::Value;
 use std::fs;
 use std::path::Path;
 
+use super::error::ProxyError;
+
 #[derive(Clone, Debug)]
-pub struct ProxyServer {
-    name: String,
-    host: String,
-    forced_host: Option<String>,
+pub struct ServerInfo {
+    pub name: String,
+    pub host: String,
+    pub forced_host: Option<String>,
 }
 
-impl ProxyServer {
-    pub fn new(name: String, host: String, forced_host: Option<String>) -> ProxyServer {
-        ProxyServer {
+impl ServerInfo {
+    pub fn new(name: String, host: String, forced_host: Option<String>) -> ServerInfo {
+        ServerInfo {
             name,
             host,
             forced_host,
         }
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
-    pub fn forced_host(&self) -> Option<&String> {
-        self.forced_host.as_ref()
-    }
-}
-
-macro_rules! extract_string {
-    ($data:expr, $key:expr) => {
-        match $data.get(&Value::String($key.to_string())) {
-            Some(Value::String(val)) => Some(val.clone()),
-            _ => None,
+    pub fn from_host(host: String) -> ServerInfo {
+        ServerInfo {
+            name: host.clone(),
+            host,
+            forced_host: None,
         }
-    };
+    }
 }
 
 #[derive(Clone)]
@@ -50,20 +37,20 @@ pub enum PlayerForwarding {
 
 #[derive(Clone)]
 pub struct ProxyConfig {
-    host: String,
-    servers: Vec<ProxyServer>,
-    default_server: Option<ProxyServer>,
-    talk_host: Option<String>,
-    talk_secret: Option<String>,
-    player_forwarding: PlayerForwarding,
-    no_pf_for_ip_connect: bool,
+    pub host: String,
+    pub servers: Vec<ServerInfo>,
+    pub default_server: Option<ServerInfo>,
+    pub talk_host: Option<String>,
+    pub talk_secret: Option<String>,
+    pub player_forwarding: PlayerForwarding,
+    pub no_pf_for_ip_connect: bool,
 }
 
 impl ProxyConfig {
     pub fn new(
         host: String,
-        servers: Vec<ProxyServer>,
-        default_server: Option<ProxyServer>,
+        servers: Vec<ServerInfo>,
+        default_server: Option<ServerInfo>,
         talk_host: Option<String>,
         talk_secret: Option<String>,
         player_forwarding: PlayerForwarding,
@@ -80,42 +67,15 @@ impl ProxyConfig {
         }
     }
 
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
-    pub fn servers(&self) -> &Vec<ProxyServer> {
-        &self.servers
-    }
-
-    pub fn talk_host(&self) -> Option<&String> {
-        self.talk_host.as_ref()
-    }
-
-    pub fn talk_secret(&self) -> Option<&String> {
-        self.talk_secret.as_ref()
-    }
-    pub fn default_server(&self) -> Option<&ProxyServer> {
-        self.default_server.as_ref()
-    }
-
-    pub fn player_forwarding(&self) -> &PlayerForwarding {
-        &self.player_forwarding
-    }
-
-    pub fn no_pf_for_ip_connect(&self) -> bool {
-        self.no_pf_for_ip_connect
-    }
-
-    pub fn load_data(data: String) -> Result<ProxyConfig, Box<dyn std::error::Error>> {
+    pub fn load_yml(data: String) -> Result<ProxyConfig, Box<dyn std::error::Error>> {
         let data = serde_yml::from_str::<Value>(&data)?;
         let data = data.as_mapping().ok_or(ProxyError::ConfigParse)?;
 
-        let host = extract_string!(data, "host").ok_or(ProxyError::ConfigParse)?;
-        let talk_host = extract_string!(data, "talk_host");
-        let talk_secret = extract_string!(data, "talk_secret");
-        let player_forwarding = match extract_string!(data, "player_forwarding") {
-            Some(pf) => match pf.as_str() {
+        let host = data.get("host").map(|o| o.as_str()).flatten().ok_or(ProxyError::ConfigParse)?.to_string();
+        let talk_host = data.get("talk_host").map(|o| o.as_str()).flatten().map(|o| o.to_string());
+        let talk_secret = data.get("talk_secret").map(|o| o.as_str()).flatten().map(|o| o.to_string());
+        let player_forwarding = match data.get("player_forwarding").map(|o| o.as_str()).flatten() {
+            Some(pf) => match pf {
                 "disabled" => PlayerForwarding::Disabled,
                 _ => PlayerForwarding::Handshake,
             },
@@ -135,7 +95,7 @@ impl ProxyConfig {
         {
             for (name, addr) in servers_map {
                 if let (Value::String(name), Value::String(addr)) = (name, addr) {
-                    servers.push(ProxyServer::new(name.clone(), addr.clone(), None));
+                    servers.push(ServerInfo::new(name.clone(), addr.clone(), None));
                 }
             }
         }
@@ -153,7 +113,8 @@ impl ProxyConfig {
             }
         }
 
-        let default_server = extract_string!(data, "default_server")
+        let default_server = data.get("default_server")
+            .map(|o| o.as_str()).flatten()
             .and_then(|ds| servers.iter().find(|s| s.name == ds).cloned());
 
         Ok(ProxyConfig::new(
@@ -168,10 +129,10 @@ impl ProxyConfig {
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<ProxyConfig, Box<dyn std::error::Error>> {
-        Self::load_data(fs::read_to_string(path)?)
+        Self::load_yml(fs::read_to_string(path)?)
     }
 
-    pub fn get_server_by_name(&self, name: &str) -> Option<ProxyServer> {
+    pub fn get_server_by_name(&self, name: &str) -> Option<ServerInfo> {
         for server in &self.servers {
             if &server.name == name {
                 return Some(server.clone());
@@ -180,7 +141,7 @@ impl ProxyConfig {
         None
     }
 
-    pub fn get_server_by_forced_host(&self, forced_host: &str) -> Option<ProxyServer> {
+    pub fn get_server_by_forced_host(&self, forced_host: &str) -> Option<ServerInfo> {
         for server in &self.servers {
             if let Some(server_forced_host) = &server.forced_host {
                 if server_forced_host == forced_host {

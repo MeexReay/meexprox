@@ -4,7 +4,7 @@ talk_host: 127.0.0.1:12346 # secret host to talk with meexprox (optional)
 talk_secret: qwerty123456 # secret token for talk with meexprox (optional)
 
 servers: # verified servers (name -> ip)
-  play: 6.tcp.eu.ngrok.io:17753
+  play: 127.0.0.1:12345
 
 forced_hosts: # connect to server from connected hostname (name -> hostname) (optional)
   play: play.localhost
