@@ -11,5 +11,6 @@ forced_hosts: # connect to server from connected hostname (name -> hostname) (op
 
 default_server: play # default server to connect (optional)
 
-player_forwarding: disabled # how to transfer player ip to connected server (handshake / disabled)
-no_pf_for_ip_connect: true # disable player forwarding for connecting with server ip
+player_forwarding: # how to transfer player ip to connected server (velocity:PASSWORD / bungeecord / bungeeguard:PASSWORD / none)
+  _: none # default player forwarding
+  play: velocity:123456 # specific player forwarding

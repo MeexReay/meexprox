@@ -9,30 +9,53 @@ pub struct ServerInfo {
     pub name: String,
     pub host: String,
     pub forced_host: Option<String>,
+    pub player_forwarding: PlayerForwarding,
 }
 
 impl ServerInfo {
-    pub fn new(name: String, host: String, forced_host: Option<String>) -> ServerInfo {
+    pub fn new(name: String, host: String, forced_host: Option<String>, player_forwarding: PlayerForwarding) -> ServerInfo {
         ServerInfo {
             name,
             host,
             forced_host,
+            player_forwarding
         }
     }
 
-    pub fn from_host(host: String) -> ServerInfo {
+    pub fn from_host(host: String, config: ProxyConfig) -> ServerInfo {
         ServerInfo {
             name: host.clone(),
             host,
             forced_host: None,
+            player_forwarding: config.default_player_forwarding.clone()
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PlayerForwarding {
-    Handshake,
-    Disabled,
+    Velocity(String),
+    Bungeecord,
+    Bungeeguard(String),
+    None,
+}
+
+impl PlayerForwarding {
+    pub fn parse(name: &str) -> Result<PlayerForwarding, ProxyError> {
+        match name {
+            "bungeecord" => Ok(PlayerForwarding::Bungeecord),
+            "none" => Ok(PlayerForwarding::None),
+            pf => {
+                if pf.starts_with("bungeeguard:") {
+                    Ok(PlayerForwarding::Bungeeguard(pf[9..].to_string()))
+                } else if pf.starts_with("velocity:") {
+                    Ok(PlayerForwarding::Velocity(pf[9..].to_string()))
+                } else {
+                    Err(ProxyError::ConfigParse)
+                }
+            },
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -42,8 +65,7 @@ pub struct ProxyConfig {
     pub default_server: Option<ServerInfo>,
     pub talk_host: Option<String>,
     pub talk_secret: Option<String>,
-    pub player_forwarding: PlayerForwarding,
-    pub no_pf_for_ip_connect: bool,
+    pub default_player_forwarding: PlayerForwarding,
 }
 
 impl ProxyConfig {
@@ -53,8 +75,7 @@ impl ProxyConfig {
         default_server: Option<ServerInfo>,
         talk_host: Option<String>,
         talk_secret: Option<String>,
-        player_forwarding: PlayerForwarding,
-        no_pf_for_ip_connect: bool,
+        default_player_forwarding: PlayerForwarding
     ) -> ProxyConfig {
         ProxyConfig {
             host,
@@ -62,8 +83,7 @@ impl ProxyConfig {
             default_server,
             talk_host,
             talk_secret,
-            player_forwarding,
-            no_pf_for_ip_connect,
+            default_player_forwarding
         }
     }
 
@@ -74,19 +94,8 @@ impl ProxyConfig {
         let host = data.get("host").map(|o| o.as_str()).flatten().ok_or(ProxyError::ConfigParse)?.to_string();
         let talk_host = data.get("talk_host").map(|o| o.as_str()).flatten().map(|o| o.to_string());
         let talk_secret = data.get("talk_secret").map(|o| o.as_str()).flatten().map(|o| o.to_string());
-        let player_forwarding = match data.get("player_forwarding").map(|o| o.as_str()).flatten() {
-            Some(pf) => match pf {
-                "disabled" => PlayerForwarding::Disabled,
-                _ => PlayerForwarding::Handshake,
-            },
-            _ => PlayerForwarding::Handshake,
-        };
-        let no_pf_for_ip_connect = data
-            .get(Value::String("no_pf_for_ip_connect".to_string()))
-            .or(Some(&Value::Bool(true)))
-            .ok_or(ProxyError::ConfigParse)?
-            .as_bool()
-            .ok_or(ProxyError::ConfigParse)?;
+        let player_forwarding = data.get("player_forwarding").ok_or(ProxyError::ConfigParse)?.as_mapping().ok_or(ProxyError::ConfigParse)?.clone();
+        let default_player_forwarding = PlayerForwarding::parse(player_forwarding["_"].as_str().ok_or(ProxyError::ConfigParse)?)?;
 
         let mut servers = Vec::new();
         if let Some(servers_map) = data
@@ -95,7 +104,9 @@ impl ProxyConfig {
         {
             for (name, addr) in servers_map {
                 if let (Value::String(name), Value::String(addr)) = (name, addr) {
-                    servers.push(ServerInfo::new(name.clone(), addr.clone(), None));
+                    servers.push(ServerInfo::new(name.clone(), addr.clone(), None, 
+                    player_forwarding.get(name).map(|o| o.as_str()).flatten()
+                    .map(PlayerForwarding::parse).ok_or(ProxyError::ConfigParse)??));
                 }
             }
         }
@@ -123,8 +134,7 @@ impl ProxyConfig {
             default_server,
             talk_host,
             talk_secret,
-            player_forwarding,
-            no_pf_for_ip_connect,
+            default_player_forwarding,
         ))
     }
 
