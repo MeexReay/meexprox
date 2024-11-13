@@ -1,5 +1,4 @@
 use log::{error, info};
-// use no_deadlocks::Mutex;
 use rust_mc_proto::{
     read_packet, write_packet, DataBufferReader, DataBufferWriter, MCConnTcp, Packet
 };
@@ -64,8 +63,7 @@ impl MeexProx {
         let next_state = handshake.read_u8_varint().as_proxy()?;
 
         let server = self.config
-            .get_server_by_forced_host(&server_address)
-            .or(self.config.default_server.clone())
+            .get_server_by_domain(&server_address)
             .ok_or(ProxyError::ConfigParse)?;
 
         let mut server_conn = TcpStream::connect(&server.host).map_err(|_| ProxyError::ServerConnect)?;
@@ -75,18 +73,6 @@ impl MeexProx {
             handshake.write_string(&server_address)?;
             handshake.write_unsigned_short(server_port)?;
             handshake.write_u8_varint(next_state)?;
-
-            if let PlayerForwarding::Handshake = self.config.player_forwarding {
-                if let SocketAddr::V4(addr) = addr {
-                    handshake.write_boolean(false)?; // is ipv6
-                    handshake.write_unsigned_short(addr.port())?; // port
-                    handshake.write_bytes(&addr.ip().octets())?; // octets
-                } else if let SocketAddr::V6(addr) = addr {
-                    handshake.write_boolean(true)?;
-                    handshake.write_unsigned_short(addr.port())?;
-                    handshake.write_bytes(&addr.ip().octets())?;
-                }
-            }
 
             Ok(())
         }).as_proxy()?;
@@ -107,6 +93,7 @@ impl MeexProx {
                 server_address, 
                 server_port, 
                 server, 
+                addr,
                 client_conn, 
                 server_conn
             )?);

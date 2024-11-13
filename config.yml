@@ -1,16 +1,34 @@
 host: 127.0.0.1:25565 # host to bind meexprox
 
-talk_host: 127.0.0.1:12346 # secret host to talk with meexprox (optional)
-talk_secret: qwerty123456 # secret token for talk with meexprox (optional)
+messaging: # messaging server (optional)
+  enabled: true
+  host: 127.0.0.1:12346 # host
+  secret: qwerty123456  # secret key
 
-servers: # verified servers (name -> ip)
-  play: 127.0.0.1:12345
+servers:
+  play: # server internal name
+    host: 127.0.0.1:12345 # server host
+    domains: 
+      - _ # means that this server is default to connect players
+      - play.localhost
+      - mc.localhost
+    forwarding: # player forwarding
+      enabled: true
+      type: velocity
+      secret: "123456"
 
-forced_hosts: # connect to server from connected hostname (name -> hostname) (optional)
-  play: play.localhost
+default_forwarding: # player forwarding to use when you connecting by ip
+  enabled: false # disable player forwarding means that you dont need to transfer player's ip and other info to this server
+  # type: velocity
+  # secret: "123456"
 
-default_server: play # default server to connect (optional)
+incoming_forwarding: # player forwarding for incoming connections
+  enabled: false
+  # type: velocity
+  # secret: "123456"
 
-player_forwarding: # how to transfer player ip to connected server (velocity:PASSWORD / bungeecord / bungeeguard:PASSWORD / none)
-  _: none # default player forwarding
-  play: velocity:123456 # specific player forwarding
+# player forwarding types: 
+# - velocity (or "modern" in Velocity config) (secret is required)
+# - bungeecord (or "legacy" in Velocity config) (secret is optional)
+# - meexprox (best) (secret is required)
+# - none (enabled: false)

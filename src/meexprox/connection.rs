@@ -1,7 +1,7 @@
-use std::{net::TcpStream, sync::{Arc, Mutex}, thread};
+use std::{net::{SocketAddr, TcpStream}, sync::{Arc, Mutex}, thread};
 
 use ignore_result::Ignore;
-use rust_mc_proto::{DataBufferReader, MCConnTcp, Packet};
+use rust_mc_proto::{DataBufferReader, DataBufferWriter, MCConnTcp, Packet, ProtocolError};
 use uuid::Uuid;
 
 use super::{config::{ProxyConfig, ServerInfo}, error::{AsProxyResult, ProxyError}};
@@ -18,8 +18,45 @@ pub struct LoginInfo {
 }
 
 impl LoginInfo {
-    pub fn write(&self, config: &ProxyConfig, stream: &mut MCConnTcp) {
-        todo!() // TODO: write login packets sending
+    pub fn write(&self, _config: &ProxyConfig, stream: &mut MCConnTcp) -> Result<(), ProtocolError> {
+        stream.write_packet(&Packet::build(0x00, |p| {
+            p.write_u16_varint(self.protocol_version)?;
+            p.write_string(&self.server_address)?;
+            p.write_short(self.server_port as i16)?;
+            p.write_u8_varint(2)
+        })?)?;
+
+        stream.write_packet(&Packet::build(0x00, |p| {
+            p.write_string(&self.name)?;
+            p.write_uuid(&self.uuid)
+        })?)?;
+
+        loop {
+            let mut packet = stream.read_packet()?;
+
+            match packet.id() {
+                0x01 => {
+                    stream.write_packet(&Packet::build(0x00, |p| {
+                        p.write_usize_varint(self.shared_secret.as_ref().unwrap().len())?;
+                        p.write_bytes(&self.shared_secret.as_ref().unwrap())?;
+                        p.write_usize_varint(self.verify_token.as_ref().unwrap().len())?;
+                        p.write_bytes(&self.verify_token.as_ref().unwrap())
+                    })?)?;
+                }
+                0x02 => {
+                    break;
+                }
+                0x03 => {
+                    let compression = Some(packet.read_usize_varint()?);
+                    stream.set_compression(compression);
+                }
+                _ => {}
+            }
+        }
+
+        stream.write_packet(&Packet::empty(0x03))?;
+
+        Ok(())
     }
 }
 
@@ -30,7 +67,8 @@ pub struct Player {
     pub name: String,
     pub uuid: Uuid,
     pub server: Option<ServerInfo>,
-    pub protocol_version: u16
+    pub protocol_version: u16,
+    pub addr: SocketAddr
 }
 
 impl Player {
@@ -39,6 +77,7 @@ impl Player {
         server_address: String, 
         server_port: u16, 
         server: ServerInfo,
+        addr: SocketAddr,
         mut client_conn: MCConnTcp, 
         mut server_conn: MCConnTcp
     ) -> Result<Player, ProxyError> {
@@ -52,6 +91,7 @@ impl Player {
         server_conn.write_packet(&packet).as_proxy()?;
 
         let mut player = Player {
+            addr,
             client_conn: Arc::new(Mutex::new(client_conn)),
             server_conn: Arc::new(Mutex::new(server_conn)),
             login_info: None,
