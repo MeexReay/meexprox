@@ -1,4 +1,4 @@
-use log::{debug, error, info};
+use log::{error, info};
 use rust_mc_proto::{
     read_packet, write_packet, DataBufferReader, DataBufferWriter, MCConnTcp, Packet
 };
@@ -89,6 +89,7 @@ impl MeexProx {
             }
         } else if next_state == 2 {
             self.players.write().unwrap().push(Player::read(
+                &self.config,
                 protocol_version, 
                 server_address, 
                 server_port, 

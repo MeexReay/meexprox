@@ -30,5 +30,5 @@ incoming_forwarding: # player forwarding for incoming connections
 # player forwarding types: 
 # - velocity (or "modern" in Velocity config) (secret is required)
 # - bungeecord (or "legacy" in Velocity config) (secret is optional)
-# - meexprox (best) (secret is required)
+# - meexprox (open-source protocol) (secret is required)
 # - none (enabled: false)
