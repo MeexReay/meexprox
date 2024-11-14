@@ -7,13 +7,13 @@ messaging: # messaging server (optional)
 
 servers:
   play: # server internal name
-    host: 127.0.0.1:12345 # server host
+    host: sloganmc.ru:25565 # server host
     domains: 
       - _ # means that this server is default to connect players
       - play.localhost
       - mc.localhost
     forwarding: # player forwarding
-      enabled: true
+      enabled: false
       type: velocity
       secret: "123456"
 

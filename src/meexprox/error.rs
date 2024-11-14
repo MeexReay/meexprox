@@ -8,7 +8,8 @@ pub enum ProxyError {
     HandshakePacket,
     LoginPacket,
     PeerAddr,
-    ProtocolError(ProtocolError)
+    ProtocolError(ProtocolError),
+    ConnectionClosed
 }
 
 impl std::fmt::Display for ProxyError {
@@ -29,7 +30,13 @@ pub trait AsProxyResult<T> {
 
 impl AsProxyError for ProtocolError {
     fn as_proxy(self) -> ProxyError {
-        ProxyError::ProtocolError(self)
+        match self {
+            Self::ConnectionClosedError => {
+                ProxyError::ConnectionClosed
+            }, i => {
+                ProxyError::ProtocolError(i)
+            }
+        }
     }
 }
 

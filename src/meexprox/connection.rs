@@ -1,6 +1,7 @@
 use std::{net::{SocketAddr, TcpStream}, sync::{Arc, Mutex}, thread};
 
 use ignore_result::Ignore;
+use log::debug;
 use rust_mc_proto::{DataBufferReader, DataBufferWriter, MCConnTcp, Packet, ProtocolError};
 use uuid::Uuid;
 
@@ -118,6 +119,7 @@ impl Player {
                 }
                 0x02 => {
                     player.write_client_packet(&packet)?;
+                    // player.write_server_packet(&player.read_client_packet()?)?;
                     break;
                 }
                 0x03 => {
@@ -142,9 +144,10 @@ impl Player {
             verify_token
         });
 
-        player.write_server_packet(&player.read_client_packet()?)?;
+        debug!("player connected");
 
         player.client_recv_loop();
+        player.server_recv_loop();
 
         Ok(player)
     }

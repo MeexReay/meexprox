@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::{debug, error, info};
 use rust_mc_proto::{
     read_packet, write_packet, DataBufferReader, DataBufferWriter, MCConnTcp, Packet
 };
@@ -117,6 +117,7 @@ impl MeexProx {
                         Ok(_) => {}
                         Err(e) => {
                             error!("connection error: {:?}", e);
+                            
                         }
                     };
                 });
