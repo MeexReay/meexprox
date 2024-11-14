@@ -1,10 +1,16 @@
 # meexprox
 Proxy for minecraft servers on rust
 
-`in developement`
+[Documentation](docs/index.md)
 
-todo list: (✅ / ❌)
-- ❌ add methods `connect_to_ip`, `connect_to_server`, `connect_to_stream`, `reconnect`
-- ❌ make setting `no_pf_for_ip_connect` working
+## Roadmap
+
+TODO list: (✅ / ❌)
+- ✅ add method `connect_server`
+- ✅ velocity player forwarding
+- ❌ meexprox player forwarding
+- ❌ bungeecord player forwarding
+- ❌ bungeeguard player forwarding
+- ❌ incoming player forwarding
 - ❌ make messaging server
-- ❌ create bukkit plugin for player formatting support and messaging
+- ❌ create bukkit plugin for player forwarding support and messaging
