@@ -3,13 +3,13 @@ use rust_mc_proto::{
     read_packet, write_packet, DataBufferReader, DataBufferWriter, MCConnTcp, Packet
 };
 use std::{
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{TcpListener, TcpStream},
     sync::{
         Arc, RwLock, RwLockReadGuard
     }, thread,
 };
 
-use super::{config::{PlayerForwarding, ProxyConfig}, connection::Player, error::{AsProxyResult, ProxyError}, event::EventListener};
+use super::{config::ProxyConfig, connection::Player, error::{AsProxyResult, ProxyError}, event::EventListener};
 
 
 pub struct MeexProx {

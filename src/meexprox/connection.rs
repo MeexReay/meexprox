@@ -176,7 +176,7 @@ impl Player {
         self.server_conn.lock().unwrap().close();
         let mut server_conn = MCConnTcp::new(server_conn);
         if let Some(login_info) = &self.login_info {
-            login_info.write(config, &mut server_conn);
+            login_info.write(config, &mut server_conn).as_proxy()?;
         }
         self.server_recv_loop();
         Ok(())
