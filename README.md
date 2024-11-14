@@ -11,6 +11,8 @@ TODO list: (✅ / ❌)
 - ❌ meexprox player forwarding
 - ❌ bungeecord player forwarding
 - ❌ bungeeguard player forwarding
+- ❌ events system
+- ❌ plugins system
 - ❌ incoming player forwarding
 - ❌ make messaging server
 - ❌ create bukkit plugin for player forwarding support and messaging
