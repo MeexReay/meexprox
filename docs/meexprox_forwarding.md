@@ -13,6 +13,8 @@ Meexprox modifies [Handshake](https://wiki.vg/Protocol#Handshake) packet to tran
 |                                          |               |              | **Server Port**        | Unsigned Short          | Default is 25565. The server does not use this information.                                                                                                                                                                              |
 |                                          |               |              | **Next State**         | VarInt Enum            | Defines the next state: 1 for Status, 2 for Login, 3 for Transfer.                                                                                                                                                                       |
 
+To make it work, download [this plugin](https://github.com/MeexReay/meexprox_plugin) on your backend server
+
 #### Overview
 - [Main page](index.md)
 - [Player Forwarding](player_forwarding.md)
