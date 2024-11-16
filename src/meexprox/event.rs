@@ -1,59 +1,51 @@
-use std::net::SocketAddr;
+use std::{any::Any, net::SocketAddr};
 
-use rust_mc_proto::Packet;
+use make_event::MakeEvent;
 
-use super::{config::ServerInfo, connection::Player, error::ProxyError};
+use super::error::ProxyError;
 
-pub trait EventListener {
-    fn on_server_recv_packet(
-        &self,
-        packet: &mut Packet,
-        player: &Player,
-    ) -> Result<(), ProxyError>;
+pub trait Event {
+    fn name(&self) -> String;
+    fn is_cancelled(&self) -> bool;
+    fn cancel(&mut self);
+}
 
-    fn on_server_send_packet(
-        &self,
-        packet: &mut Packet,
-        cancel: &mut bool,
-        player: &Player,
-    ) -> Result<(), ProxyError>;
+pub trait AsAny {
+    fn as_any_ref(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn as_any_box(self: Box<Self>) -> Box<dyn Any>;
+}
 
-    fn on_client_send_packet(
-        &self,
-        packet: &mut Packet,
-        cancel: &mut bool,
-        player: &Player,
-    ) -> Result<(), ProxyError>;
+impl<T> AsAny for T
+where
+    T: Any,
+{
+    fn as_any_ref(&self) -> &dyn Any {
+        self
+    }
 
-    fn on_client_recv_packet(
-        &self,
-        packet: &mut Packet,
-        player: &Player,
-    ) -> Result<(), ProxyError>;
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 
-    fn on_player_connected(
-        &self,
-        player: &Player,
-    ) -> Result<(), ProxyError>;
+    fn as_any_box(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
 
-    fn on_player_disconnected(
-        &self,
-        player: &Player,
-    ) -> Result<(), ProxyError>;
+pub trait EventListener<T: Event>: AsAny {
+    fn on_event(&self, event: &mut T) -> Result<(), ProxyError>;
+}
 
-    fn on_player_connecting_server(
-        &self,
-        player: &Player,
-        cancel: &mut bool,
-        server: &mut ServerInfo
-    ) -> Result<(), ProxyError>;
 
-    fn on_status_request(
-        &self,
-        status: String,
-        client_address: SocketAddr,
-        server_address: String,
-        server_port: u16,
-        cancel: &mut bool,
-    ) -> Result<(), ProxyError>;
+#[derive(MakeEvent)]
+#[MakeEvent("status")]
+pub struct StatusEvent {
+    cancelled: bool,
+    addr: SocketAddr,
+    #[setter]
+    motd: String,
+    server_address: String,
+    server_port: u16,
+    protocol_version: u16
 }

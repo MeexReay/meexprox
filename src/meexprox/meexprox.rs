@@ -9,13 +9,13 @@ use std::{
     }, thread,
 };
 
-use super::{config::ProxyConfig, connection::Player, error::{AsProxyResult, ProxyError}, event::EventListener};
+use super::{config::ProxyConfig, connection::Player, error::{AsProxyResult, ProxyError}, event::{Event, EventListener}};
 
 
 pub struct MeexProx {
     config: ProxyConfig,
     players: RwLock<Vec<Player>>,
-    event_listeners: Vec<Box<dyn EventListener + Send + Sync>>
+    event_listeners: Vec<Box<dyn EventListener<dyn Event> + Send + Sync>>
 }
 
 impl MeexProx {
@@ -29,17 +29,17 @@ impl MeexProx {
 
     pub fn add_event_listener(
         &mut self,
-        event_listener: Box<dyn EventListener + Send + Sync>,
+        event_listener: Box<dyn EventListener<dyn Event> + Send + Sync>,
     ) {
         self.event_listeners.push(event_listener);
     }
 
-    pub fn trigger_event(
-        &self,
-        trigger: fn(&dyn EventListener) -> Result<(), ProxyError>
-    ) -> Result<(), ProxyError> {
-        for event_listener in &self.event_listeners {
-            trigger(event_listener.as_ref())?
+    pub fn trigger_event<T: Event + 'static>(&self, event: &mut T) -> Result<(), ProxyError> { 
+        for listener in &self.event_listeners {
+            if let Some(listener) = 
+                    listener.as_any_ref().downcast_ref::<Box<dyn EventListener<T> + Send + Sync + 'static>>() { 
+                listener.on_event(event)?;
+            }
         }
         Ok(())
     }

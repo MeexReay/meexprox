@@ -13,7 +13,7 @@ forwarding:
 
 ### Player forwarding types
 
-- `meexprox` - meexprox player forwarding ([about it](meexprox_forwarding.md))
+- `meexprox` - meexprox player forwarding ([about it](meexprox_forwarding.md)) ([plugin](https://github.com/MeexReay/meexprox_plugin))
 - `velocity` - velocity 'modern' player forwarding, secret key is required
 - `bungeecord` (with secret) - bungeecord player forwarding
 - `bungeecord` (without secret) - bungeeguard player forwarding
