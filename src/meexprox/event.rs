@@ -37,7 +37,6 @@ pub trait EventListener<T: Event>: AsAny {
     fn on_event(&self, event: &mut T) -> Result<(), ProxyError>;
 }
 
-
 #[derive(MakeEvent)]
 #[MakeEvent("status")]
 pub struct StatusEvent {

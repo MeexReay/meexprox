@@ -5,13 +5,6 @@ use meexprox::{config::ProxyConfig, MeexProx};
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
 
 
-
-// pub struct MyEventListener {}
-
-// impl EventListener for MyEventListener {
-
-// }
-
 pub fn main() {
     CombinedLogger::init(vec![
         TermLogger::new(
