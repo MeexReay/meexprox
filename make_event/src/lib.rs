@@ -20,17 +20,29 @@ pub fn make_event_derive(input: TokenStream) -> TokenStream {
 
     let mut getters = Vec::new();
     let mut setters = Vec::new();
+    let mut new_args = Vec::new();
+    let mut new_inits = Vec::new();
+    let mut has_cancelled_field = false;
 
     if let Data::Struct(data) = input.data {
         if let Fields::Named(fields) = data.fields {
             for field in fields.named.iter() {
                 let field_name = &field.ident;
                 let field_ty = &field.ty;
+
+                if field_name.as_ref().map(|name| name == "cancelled").unwrap_or(false) {
+                    has_cancelled_field = true;
+                } else {
+                    new_args.push(quote! { #field_name: #field_ty });
+                    new_inits.push(quote! { #field_name });
+                }
+
                 getters.push(quote! {
                     pub fn #field_name(&self) -> &#field_ty {
                         &self.#field_name
                     }
                 });
+
                 if field.attrs.iter().any(|attr| attr.path().is_ident("setter")) {
                     let setter_name = format_ident!("set_{}", field_name.as_ref().unwrap());
                     setters.push(quote! {
@@ -45,13 +57,8 @@ pub fn make_event_derive(input: TokenStream) -> TokenStream {
         panic!("MakeEvent can only be derived for structs with named fields");
     }
 
-    let expanded = quote! {
-        impl #struct_name {
-            #(#getters)*
-            #(#setters)*
-        }
-
-        impl Event for #struct_name {
+    let cancel_methods = if has_cancelled_field {
+        quote! {
             fn cancel(&mut self) {
                 self.cancelled = true;
             }
@@ -59,6 +66,39 @@ pub fn make_event_derive(input: TokenStream) -> TokenStream {
             fn is_cancelled(&self) -> bool {
                 self.cancelled
             }
+        }
+    } else {
+        quote! {}
+    };
+
+    let new_method = if has_cancelled_field {
+        quote! {
+            pub fn new(#(#new_args),*) -> Self {
+                Self {
+                    #(#new_inits),*,
+                    cancelled: false,
+                }
+            }
+        }
+    } else {
+        quote! {
+            pub fn new(#(#new_args),*) -> Self {
+                Self {
+                    #(#new_inits),*
+                }
+            }
+        }
+    };
+
+    let expanded = quote! {
+        impl #struct_name {
+            #(#getters)*
+            #(#setters)*
+            #new_method
+        }
+
+        impl Event for #struct_name {
+            #cancel_methods
 
             fn name(&self) -> String {
                 #event_name.to_string()

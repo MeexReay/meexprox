@@ -9,7 +9,7 @@ use std::{
     }, thread,
 };
 
-use super::{config::ProxyConfig, connection::Player, error::{AsProxyResult, ProxyError}, event::{Event, EventListener}};
+use super::{config::ProxyConfig, connection::Player, error::{AsProxyResult, ProxyError}, event::{Event, EventListener, StatusEvent}};
 
 
 pub struct MeexProx {
@@ -84,8 +84,19 @@ impl MeexProx {
 
         if next_state == 1 {
             loop {
-                server_conn.write_packet(&client_conn.read_packet().as_proxy()?).as_proxy()?;
-                client_conn.write_packet(&server_conn.read_packet().as_proxy()?).as_proxy()?;
+                let packet = client_conn.read_packet().as_proxy()?;
+                server_conn.write_packet(&packet).as_proxy()?;
+                if packet.id() == 0x00 {
+                    let motd = server_conn.read_packet().as_proxy()?.read_string().as_proxy()?;
+                    
+                    let mut event = StatusEvent::new(addr.clone(), motd, server_address.clone(), server_port, protocol_version);
+                    self.trigger_event(&mut event)?;
+                    let motd = event.motd();
+
+                    client_conn.write_packet(&Packet::build(0x00, |o| o.write_string(&motd)).as_proxy()?).as_proxy()?;
+                } else {
+                    client_conn.write_packet(&server_conn.read_packet().as_proxy()?).as_proxy()?;
+                }
             }
         } else if next_state == 2 {
             self.players.write().unwrap().push(Player::read(
