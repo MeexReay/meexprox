@@ -1,3 +1,6 @@
+> [!WARNING]
+> Migrated to my selfhost [Gitea](https://git.meex.lol/MeexReay/meexprox)
+
 # meexprox
 Proxy for minecraft servers on rust
 
